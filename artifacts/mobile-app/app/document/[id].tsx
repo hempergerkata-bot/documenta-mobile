@@ -2,6 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import {
+  Alert,
   Image,
   Modal,
   Platform,
@@ -15,6 +16,23 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DocumentPdfPreview } from '@/components/DocumentPdfPreview';
 import { useApp } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
+import {
+  exportDocumentPdf,
+  printDocumentPdf,
+  shareDocumentPdf,
+} from '@/utils/documentActions';
+
+const structuredFieldLabels: Record<string, string> = {
+  referenceNumber: 'Aktenzeichen / Referenz',
+  customerNumber: 'Kundennummer',
+  invoiceNumber: 'Rechnungsnummer',
+  contractNumber: 'Vertragsnummer',
+  insuranceNumber: 'Versicherungsnummer',
+  iban: 'IBAN',
+  taxNumber: 'Steuernummer / Steuer-ID',
+  patientNumber: 'Patienten- / Fallnummer',
+  schoolReference: 'Schul- / Betreuungsreferenz',
+};
 
 function MetadataRow({
   label,
@@ -52,6 +70,18 @@ export default function SavedDocumentDetailScreen() {
     !showOriginal &&
     (document?.mimeType?.toLowerCase().includes('pdf') ||
       previewUri?.toLowerCase().split('?')[0].endsWith('.pdf'));
+  const pdfUri = document?.pdfUri ?? (isPdf ? previewUri : undefined);
+
+  const runDocumentAction = async (action: () => Promise<void>) => {
+    try {
+      await action();
+    } catch (error) {
+      Alert.alert(
+        'Aktion nicht möglich',
+        error instanceof Error ? error.message : 'Bitte versuche es erneut.',
+      );
+    }
+  };
 
   if (!document) {
     return (
@@ -192,6 +222,45 @@ export default function SavedDocumentDetailScreen() {
             ) : null}
           </View>
 
+          <View style={styles.documentActions}>
+            <Pressable
+              disabled={!previewUri}
+              onPress={() => setFullScreen(true)}
+              style={[styles.actionButton, { backgroundColor: colors.navy }, !previewUri && styles.disabled]}
+              testID="document-action-open"
+            >
+              <Feather name="maximize-2" size={17} color={colors.white} />
+              <Text style={[styles.actionText, { color: colors.white }]}>Öffnen</Text>
+            </Pressable>
+            <Pressable
+              disabled={!pdfUri}
+              onPress={() => void runDocumentAction(() => shareDocumentPdf(pdfUri))}
+              style={[styles.actionButton, { backgroundColor: colors.card, borderColor: colors.border }, !pdfUri && styles.disabled]}
+              testID="document-action-share"
+            >
+              <Feather name="share-2" size={17} color={colors.navy} />
+              <Text style={[styles.actionText, { color: colors.navy }]}>Teilen</Text>
+            </Pressable>
+            <Pressable
+              disabled={!pdfUri}
+              onPress={() => void runDocumentAction(() => printDocumentPdf(pdfUri))}
+              style={[styles.actionButton, { backgroundColor: colors.card, borderColor: colors.border }, !pdfUri && styles.disabled]}
+              testID="document-action-print"
+            >
+              <Feather name="printer" size={17} color={colors.navy} />
+              <Text style={[styles.actionText, { color: colors.navy }]}>Drucken</Text>
+            </Pressable>
+            <Pressable
+              disabled={!pdfUri}
+              onPress={() => void runDocumentAction(() => exportDocumentPdf(pdfUri))}
+              style={[styles.actionButton, { backgroundColor: colors.coral }, !pdfUri && styles.disabled]}
+              testID="document-action-export"
+            >
+              <Feather name="download" size={17} color={colors.white} />
+              <Text style={[styles.actionText, { color: colors.white }]}>PDF</Text>
+            </Pressable>
+          </View>
+
           <Text style={[styles.sectionTitle, { color: colors.navy }]}>Dokumentdetails</Text>
           <View style={[styles.metadataCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <MetadataRow label="Titel" value={document.title} colors={colors} />
@@ -207,6 +276,14 @@ export default function SavedDocumentDetailScreen() {
             <MetadataRow label="Status" value={document.status} colors={colors} />
             <MetadataRow label="Tags" value={document.tags.join(', ')} colors={colors} />
             <MetadataRow label="Notiz" value={document.note} colors={colors} />
+            {Object.entries(document.structuredFields ?? {}).map(([field, value]) => (
+              <MetadataRow
+                key={field}
+                label={structuredFieldLabels[field] ?? field}
+                value={value}
+                colors={colors}
+              />
+            ))}
             <MetadataRow
               label="Lokale OCR"
               value={
@@ -266,6 +343,9 @@ const styles = StyleSheet.create({
   noOriginalText: { fontSize: 11, lineHeight: 17, textAlign: 'center', fontFamily: 'Inter_400Regular', marginTop: 6 },
   fullScreenButton: { minHeight: 47, borderRadius: 14, marginTop: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   fullScreenText: { fontSize: 12, fontFamily: 'Inter_700Bold' },
+  documentActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginBottom: 25 },
+  actionButton: { flexGrow: 1, minWidth: '46%', minHeight: 50, borderRadius: 15, borderWidth: 1, borderColor: 'transparent', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  actionText: { fontSize: 11, fontFamily: 'Inter_700Bold' },
   sectionTitle: { fontSize: 19, fontFamily: 'Inter_700Bold', marginBottom: 12 },
   metadataCard: { borderRadius: 20, borderWidth: 1, paddingHorizontal: 14 },
   metadataRow: { minHeight: 60, borderBottomWidth: StyleSheet.hairlineWidth, paddingVertical: 11 },

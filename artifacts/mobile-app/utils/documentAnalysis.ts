@@ -11,6 +11,15 @@ export type DocumentAnalysisField =
   | 'dueDate'
   | 'amount'
   | 'person'
+  | 'referenceNumber'
+  | 'customerNumber'
+  | 'invoiceNumber'
+  | 'contractNumber'
+  | 'insuranceNumber'
+  | 'iban'
+  | 'taxNumber'
+  | 'patientNumber'
+  | 'schoolReference'
   | 'status'
   | 'tags';
 
@@ -33,9 +42,33 @@ type DocumentRule = {
   subcategory?: string;
   tags: string[];
   patterns: RegExp[];
+  fieldRules?: Array<{
+    field: DocumentAnalysisField;
+    labels: string[];
+  }>;
 };
 
 const rules: DocumentRule[] = [
+  {
+    documentType: 'Arztbrief / Befund',
+    category: 'Gesundheit',
+    subcategory: 'Medizinische Unterlagen',
+    tags: ['gesundheit', 'medizin'],
+    patterns: [/\b(?:arztbrief|befundbericht|laborbefund|diagnose)\b/i, /\b(?:patient(?:in)?|behandelnde[rn]? arzt|anamnese)\b/i],
+    fieldRules: [
+      { field: 'patientNumber', labels: ['Patientennummer', 'Patienten-Nr\\.?', 'Fallnummer'] },
+    ],
+  },
+  {
+    documentType: 'Schule / Kindergarten',
+    category: 'Arbeit & Bildung',
+    subcategory: 'Schule & Betreuung',
+    tags: ['schule', 'kind'],
+    patterns: [/\b(?:schule|grundschule|gymnasium|kindergarten|kindertagesstätte|kita)\b/i, /\b(?:schüler(?:in)?|erziehungsberechtigte|elternbrief)\b/i],
+    fieldRules: [
+      { field: 'schoolReference', labels: ['Schülernummer', 'Aktenzeichen', 'Geschäftszeichen'] },
+    ],
+  },
   {
     documentType: 'Lohnabrechnung / Gehaltsabrechnung',
     category: 'Arbeit & Bildung',
@@ -63,6 +96,10 @@ const rules: DocumentRule[] = [
     subcategory: 'Bank',
     tags: ['kontoauszug', 'bank'],
     patterns: [/\bkontoauszug\b/i, /\b(?:iban|bic)\b[\s\S]{0,120}\b(?:saldo|kontostand)\b/i],
+    fieldRules: [
+      { field: 'iban', labels: ['IBAN'] },
+      { field: 'customerNumber', labels: ['Kundennummer', 'Kunden-Nr\\.?'] },
+    ],
   },
   {
     documentType: 'Steuerdokument',
@@ -70,6 +107,10 @@ const rules: DocumentRule[] = [
     subcategory: 'Steuern',
     tags: ['steuer', 'finanzamt'],
     patterns: [/\bsteuerbescheid\b/i, /\bfinanzamt\b/i, /\beinkommensteuer\b/i],
+    fieldRules: [
+      { field: 'taxNumber', labels: ['Steuernummer', 'Steuer-ID', 'Identifikationsnummer'] },
+      { field: 'referenceNumber', labels: ['Aktenzeichen', 'Geschäftszeichen'] },
+    ],
   },
   {
     documentType: 'Krankenkasse',
@@ -84,6 +125,10 @@ const rules: DocumentRule[] = [
     subcategory: 'Versicherung',
     tags: ['versicherung'],
     patterns: [/\bversicherungsschein\b/i, /\bversicherungsnummer\b/i, /\bversicherungsbeitrag\b/i],
+    fieldRules: [
+      { field: 'insuranceNumber', labels: ['Versicherungsnummer', 'Versicherungs-Nr\\.?', 'Policennummer'] },
+      { field: 'contractNumber', labels: ['Vertragsnummer', 'Vertrags-Nr\\.?'] },
+    ],
   },
   {
     documentType: 'Rechnung Strom/Gas/Internet',
@@ -101,6 +146,9 @@ const rules: DocumentRule[] = [
     subcategory: 'Amtliches Schreiben',
     tags: ['behörde'],
     patterns: [/\b(?:bescheid|aktenzeichen)\b/i, /\b(?:bundesagentur|bürgeramt|landratsamt|stadtverwaltung)\b/i],
+    fieldRules: [
+      { field: 'referenceNumber', labels: ['Aktenzeichen', 'Geschäftszeichen', 'Vorgangsnummer'] },
+    ],
   },
   {
     documentType: 'Vertrag',
@@ -108,6 +156,10 @@ const rules: DocumentRule[] = [
     subcategory: 'Vertrag',
     tags: ['vertrag'],
     patterns: [/\bvertrag\b/i, /\bvertragsnummer\b/i, /\bvertragspartner\b/i],
+    fieldRules: [
+      { field: 'contractNumber', labels: ['Vertragsnummer', 'Vertrags-Nr\\.?'] },
+      { field: 'customerNumber', labels: ['Kundennummer', 'Kunden-Nr\\.?'] },
+    ],
   },
   {
     documentType: 'Rechnung',
@@ -115,6 +167,11 @@ const rules: DocumentRule[] = [
     subcategory: 'Rechnungen',
     tags: ['rechnung'],
     patterns: [/\brechnung\b/i, /\brechnungs(?:nummer|datum|betrag)\b/i],
+    fieldRules: [
+      { field: 'invoiceNumber', labels: ['Rechnungsnummer', 'Rechnungs-Nr\\.?', 'Belegnummer'] },
+      { field: 'customerNumber', labels: ['Kundennummer', 'Kunden-Nr\\.?'] },
+      { field: 'iban', labels: ['IBAN'] },
+    ],
   },
 ];
 
@@ -123,18 +180,13 @@ const monthNames =
 const dateValuePattern = `(?:\\d{1,2}[.\\-/]\\d{1,2}[.\\-/]\\d{2,4}|\\d{1,2}\\.\\s*(?:${monthNames})\\s+\\d{4})`;
 const amountPattern =
   '((?:\\d{1,3}(?:[.\\s]\\d{3})+|\\d{1,6})[,.]\\d{2}\\s*(?:€|EUR)?)';
-const requestedFields: DocumentAnalysisField[] = [
+const baseRequestedFields: DocumentAnalysisField[] = [
   'title',
   'sender',
   'category',
-  'subcategory',
   'documentType',
   'documentDate',
-  'payrollPeriod',
-  'dueDate',
-  'amount',
   'person',
-  'tags',
 ];
 
 function normalizeLines(text: string) {
@@ -145,7 +197,7 @@ function normalizeLines(text: string) {
 }
 
 function isDocumentLabelLine(line: string) {
-  return /^(?:Absender|Arbeitgeber(?:bezeichnung|daten)?|Betriebsname|Firma|Betrieb|Betriebsstätte|Institution|Versicherer|Arbeitnehmer(?:name)?|Arbeitnehmer Name|Name des Arbeitnehmers|Beschäftigtenname|Mitarbeitername|AN-Name|Mitarbeiter(?:\/in)?|Beschäftigte(?:r|n)?|Personalien|Versicherte(?:r|n)?|Empfänger(?:\/in)?|Dokumentdatum|Rechnungsdatum|Ausstellungsdatum|Abrechnungsdatum|Datum der Abrechnung|Abrechnungsstichtag|Abrechnung vom|Erstellt am|Datum|Fälligkeitsdatum|Fälligkeit|zahlbar bis|Frist bis|spätestens am|Auszahlungsbetrag|Nettoauszahlung|Überweisungsbetrag|Nettoentgelt|Nettobetrag|Nettoverdienst|Netto[- ]Bezüge|Auszahlung netto)\s*[:\-]?$/i.test(
+  return /^(?:Absender|Arbeitgeber(?:bezeichnung|daten)?|Betriebsname|Firma|Betrieb|Betriebsstätte|Institution|Versicherer|Arbeitnehmer(?:name)?|Arbeitnehmer Name|Name des Arbeitnehmers|Beschäftigtenname|Mitarbeitername|AN-Name|Mitarbeiter(?:\/in)?|Beschäftigte(?:r|n)?|Personalien|Versicherte(?:r|n)?|Patient(?:in)?|Schüler(?:in)?|Empfänger(?:\/in)?|Dokumentdatum|Rechnungsdatum|Ausstellungsdatum|Abrechnungsdatum|Datum der Abrechnung|Abrechnungsstichtag|Abrechnung vom|Erstellt am|Datum|Fälligkeitsdatum|Fälligkeit|zahlbar bis|Frist bis|spätestens am|Auszahlungsbetrag|Nettoauszahlung|Überweisungsbetrag|Nettoentgelt|Nettobetrag|Nettoverdienst|Netto[- ]Bezüge|Auszahlung netto)\s*[:\-]?$/i.test(
     line,
   );
 }
@@ -189,6 +241,28 @@ function cleanEntityValue(value: string) {
     .replace(/\s{2,}/g, ' ')
     .replace(/^[,:;\s-]+|[,:;\s-]+$/g, '')
     .trim();
+}
+
+function cleanStructuredValue(value: string) {
+  return value
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[,:;\s-]+|[,:;\s-]+$/g, '')
+    .trim()
+    .slice(0, 120);
+}
+
+function findProfileFields(lines: string[], rule?: DocumentRule) {
+  const result: Partial<
+    Record<DocumentAnalysisField, SuggestedValue<string | string[]>>
+  > = {};
+  for (const fieldRule of rule?.fieldRules ?? []) {
+    const found = findLabelValue(lines, fieldRule.labels);
+    const value = found ? cleanStructuredValue(found.value) : '';
+    if (found && value.length >= 2) {
+      result[fieldRule.field] = suggestion(value, 'high', found.evidence);
+    }
+  }
+  return result;
 }
 
 function extractLegalEntity(line: string) {
@@ -297,6 +371,8 @@ function findPerson(lines: string[], isPayroll: boolean) {
     'Beschäftigte(?:r|n)?',
     'Personalien',
     'Versicherte(?:r|n)?',
+    'Patient(?:in)?',
+    'Schüler(?:in)?',
     'Empfänger(?:\\/in)?',
   ]);
   if (labelled) {
@@ -311,7 +387,6 @@ function findPerson(lines: string[], isPayroll: boolean) {
     }
   }
 
-  if (!isPayroll) return undefined;
   for (let index = 0; index < Math.min(lines.length - 3, 35); index += 1) {
     const candidate = lines[index];
     const followingLines = lines.slice(index + 1, index + 4);
@@ -431,7 +506,7 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
       text: '',
       fields,
       uncertainFields: [],
-      unresolvedFields: requestedFields,
+      unresolvedFields: baseRequestedFields,
     };
   }
 
@@ -487,6 +562,8 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
     fields.person = suggestion(person.value, person.confidence, person.evidence);
   }
 
+  Object.assign(fields, findProfileFields(lines, detected?.rule));
+
   const payrollPeriod =
     isPayroll
       ? findPayrollPeriod(text)
@@ -511,6 +588,8 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
       'medium',
       `${documentType}; ${fields.sender.evidence}`,
     );
+  } else if (documentType) {
+    fields.title = suggestion(documentType, 'medium', detected?.evidence ?? documentType);
   }
 
   if (detected) {
@@ -535,6 +614,19 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
     .filter(([, value]) => value.confidence === 'medium')
     .map(([field]) => field);
 
+  const profileRequestedFields =
+    detected?.rule.fieldRules?.map((fieldRule) => fieldRule.field) ?? [];
+  const financialDocument =
+    isPayroll ||
+    /(?:Rechnung|Mahnung|Zahlungsaufforderung|Kontoauszug|Steuerdokument|Versicherungsbrief)/.test(
+      documentType ?? '',
+    );
+  const requestedFields = uniqueTags([
+    ...baseRequestedFields,
+    ...profileRequestedFields,
+    isPayroll ? 'payrollPeriod' : undefined,
+    financialDocument ? 'amount' : undefined,
+  ]) as DocumentAnalysisField[];
   const unresolvedFields = requestedFields.filter((field) => !fields[field]);
 
   return { text, fields, uncertainFields, unresolvedFields };

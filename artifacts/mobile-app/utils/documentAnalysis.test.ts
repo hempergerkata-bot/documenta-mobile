@@ -277,3 +277,66 @@ test('recognizes an unlabeled payroll recipient from a nearby postal address', (
   assert.equal(result.fields.person?.value, 'Katalin Monika Hemperger');
   assert.equal(result.fields.person?.confidence, 'medium');
 });
+
+test('classifies and extracts an insurance document through its profile', () => {
+  const result = analyzeGermanDocumentText(`
+    Nordstern Versicherung AG
+    Versicherungsschein
+    Versicherungsnummer: VS-2026-88421
+    Vertragsnummer: V-193844
+    Versicherte: Erika Mustermann
+    Ausstellungsdatum: 12.08.2026
+  `);
+
+  assert.equal(result.fields.documentType?.value, 'Versicherungsbrief');
+  assert.equal(result.fields.insuranceNumber?.value, 'VS-2026-88421');
+  assert.equal(result.fields.contractNumber?.value, 'V-193844');
+  assert.equal(result.fields.person?.value, 'Erika Mustermann');
+});
+
+test('classifies a medical report and extracts the patient reference', () => {
+  const result = analyzeGermanDocumentText(`
+    Gemeinschaftspraxis am Markt
+    Befundbericht
+    Patientin: Erika Mustermann
+    Patientennummer: P-481516
+    Ausstellungsdatum: 20.08.2026
+    Diagnose: Kontrolluntersuchung
+  `);
+
+  assert.equal(result.fields.documentType?.value, 'Arztbrief / Befund');
+  assert.equal(result.fields.patientNumber?.value, 'P-481516');
+  assert.equal(result.fields.person?.value, 'Erika Mustermann');
+});
+
+test('extracts invoice identifiers without payroll-specific assumptions', () => {
+  const result = analyzeGermanDocumentText(`
+    Beispielhandel GmbH
+    Rechnung
+    Rechnungsnummer: RE-2026-991
+    Kundennummer: K-44028
+    Rechnungsdatum: 18.08.2026
+    Gesamtbetrag: 149,90 EUR
+    Zahlbar bis: 01.09.2026
+    IBAN: DE02120300000000202051
+  `);
+
+  assert.equal(result.fields.documentType?.value, 'Rechnung');
+  assert.equal(result.fields.invoiceNumber?.value, 'RE-2026-991');
+  assert.equal(result.fields.customerNumber?.value, 'K-44028');
+  assert.equal(result.fields.iban?.value, 'DE02120300000000202051');
+  assert.equal(result.fields.amount?.value, '149,90 EUR');
+});
+
+test('classifies school documents and extracts their own reference', () => {
+  const result = analyzeGermanDocumentText(`
+    Grundschule am Stadtpark
+    Elternbrief
+    Schülerin: Mia Mustermann
+    Schülernummer: S-2026-77
+    Datum: 27.08.2026
+  `);
+
+  assert.equal(result.fields.documentType?.value, 'Schule / Kindergarten');
+  assert.equal(result.fields.schoolReference?.value, 'S-2026-77');
+});

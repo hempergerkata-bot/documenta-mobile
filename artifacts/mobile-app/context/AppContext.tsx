@@ -7,7 +7,10 @@ import React, {
   useMemo,
   useState,
 } from 'react';
-import type { DocumentAnalysisResult } from '@/utils/documentAnalysis';
+import type {
+  AnalysisConfidence,
+  DocumentAnalysisResult,
+} from '@/utils/documentAnalysis';
 
 export type DocumentStatus = 'Offen' | 'Bezahlt' | 'Erledigt' | 'Später';
 
@@ -33,6 +36,8 @@ export type DocumentRecord = {
   originalPageUris?: string[];
   ocrText?: string;
   analysisUncertainFields?: string[];
+  structuredFields?: Record<string, string>;
+  analysisConfidenceByField?: Record<string, AnalysisConfidence>;
   createdAt: string;
 };
 

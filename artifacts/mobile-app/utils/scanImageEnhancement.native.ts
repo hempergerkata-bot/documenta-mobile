@@ -113,40 +113,53 @@ async function processEnhancedScanPage(
       luminance[pixel] = clamp(0.2126 * r + 0.7152 * g + 0.0722 * b);
     }
 
-    const gridWidth = 24;
-    const gridHeight = Math.max(12, Math.round((height / width) * gridWidth));
-    const gridSum = new Float64Array(gridWidth * gridHeight);
+    const gridWidth = 36;
+    const gridHeight = Math.max(18, Math.round((height / width) * gridWidth));
+    const histogramBins = 32;
+    const gridHistogram = new Uint32Array(
+      gridWidth * gridHeight * histogramBins,
+    );
     const gridCount = new Uint32Array(gridWidth * gridHeight);
-    const gridMax = new Uint8Array(gridWidth * gridHeight);
-    for (let y = 0; y < height; y += 3) {
+    for (let y = 0; y < height; y += 2) {
       const gridY = Math.min(gridHeight - 1, Math.floor((y / height) * gridHeight));
-      for (let x = 0; x < width; x += 3) {
+      for (let x = 0; x < width; x += 2) {
         const pixel = y * width + x;
         const value = luminance[pixel];
         const gridX = Math.min(gridWidth - 1, Math.floor((x / width) * gridWidth));
         const index = gridY * gridWidth + gridX;
-        gridMax[index] = Math.max(gridMax[index], value);
-        if (value >= 155) {
-          gridSum[index] += value;
-          gridCount[index] += 1;
-        }
+        const bin = Math.min(
+          histogramBins - 1,
+          Math.floor((value / 256) * histogramBins),
+        );
+        gridHistogram[index * histogramBins + bin] += 1;
+        gridCount[index] += 1;
       }
     }
 
     const gridBackground = new Float32Array(gridWidth * gridHeight);
     for (let index = 0; index < gridBackground.length; index += 1) {
-      gridBackground[index] =
-        gridCount[index] > 0
-          ? Math.max(gridMax[index] * 0.92, gridSum[index] / gridCount[index])
-          : gridMax[index] >= 100
-            ? gridMax[index]
-            : 225;
+      const targetCount = Math.max(1, Math.ceil(gridCount[index] * 0.84));
+      let cumulative = 0;
+      let selectedBin = histogramBins - 1;
+      for (let bin = 0; bin < histogramBins; bin += 1) {
+        cumulative += gridHistogram[index * histogramBins + bin];
+        if (cumulative >= targetCount) {
+          selectedBin = bin;
+          break;
+        }
+      }
+      gridBackground[index] = clamp(
+        ((selectedBin + 0.5) / histogramBins) * 256,
+        176,
+        252,
+      );
     }
 
     let totalLuminanceChange = 0;
     let newlyClippedHighlights = 0;
     let sourceInkPixels = 0;
     let retainedInkPixels = 0;
+    const normalizedLuminance = new Uint8Array(pixelCount);
     for (let y = 0; y < height; y += 1) {
       const gridPositionY = (y / Math.max(1, height - 1)) * (gridHeight - 1);
       const gridY0 = Math.floor(gridPositionY);
@@ -171,39 +184,47 @@ async function processEnhancedScanPage(
         const inkDistance = Math.max(0, background - originalY);
         let targetY =
           originalY >= background
-            ? 248 + Math.min(5, (originalY - background) * 0.12)
-            : 248 - inkDistance * 1.42;
+            ? 249 + Math.min(4, (originalY - background) * 0.1)
+            : 249 - inkDistance * 1.5;
         if (inkDistance >= 24) sourceInkPixels += 1;
-        if (targetY <= 218) retainedInkPixels += 1;
 
-        if (targetY > 205) {
-          targetY = 244 + (targetY - 205) * 0.22;
-        } else if (targetY < 180) {
-          targetY -= (180 - targetY) * 0.12;
-        }
-
-        if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
-          const neighbourAverage =
-            (luminance[pixel - 1] +
-              luminance[pixel + 1] +
-              luminance[pixel - width] +
-              luminance[pixel + width]) /
-            4;
-          const edge = Math.abs(originalY - neighbourAverage);
-          targetY =
-            edge < 7
-              ? targetY * 0.88 + neighbourAverage * 0.12
-              : targetY + (originalY - neighbourAverage) * 0.15;
+        if (targetY > 218) {
+          targetY = 246 + (targetY - 218) * 0.2;
+        } else if (targetY < 188) {
+          targetY -= (188 - targetY) * 0.1;
         }
 
         targetY = clamp(targetY, 2, 253);
+        normalizedLuminance[pixel] = targetY;
         totalLuminanceChange += Math.abs(targetY - originalY);
         if (targetY >= 252 && originalY < 238) newlyClippedHighlights += 1;
+        if (inkDistance >= 24 && targetY <= 224) retainedInkPixels += 1;
+      }
+    }
+
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const pixel = y * width + x;
+        const offset = pixel * 4;
+        const originalY = luminance[pixel];
+        let targetY = normalizedLuminance[pixel];
+        if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+          const neighbourAverage =
+            (normalizedLuminance[pixel - 1] +
+              normalizedLuminance[pixel + 1] +
+              normalizedLuminance[pixel - width] +
+              normalizedLuminance[pixel + width]) /
+            4;
+          const detail = targetY - neighbourAverage;
+          const sharpenStrength = Math.abs(detail) < 42 ? 0.34 : 0.18;
+          targetY = clamp(targetY + detail * sharpenStrength, 2, 253);
+        }
+
         const ratio = targetY / Math.max(3, originalY);
         const correctedR = clamp(data[offset] * ratio);
         const correctedG = clamp(data[offset + 1] * ratio);
         const correctedB = clamp(data[offset + 2] * ratio);
-        const grayscaleMix = 0.88;
+        const grayscaleMix = 0.93;
         data[offset] = clamp(
           correctedR * (1 - grayscaleMix) + targetY * grayscaleMix,
         );

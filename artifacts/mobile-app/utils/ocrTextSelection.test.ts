@@ -77,3 +77,26 @@ test('repairs an incomplete duplicate primary label from a complete secondary bl
 
   assert.match(merged, /Arbeitgeber\nNordlicht Logistik GmbH/);
 });
+
+test('keeps readable medical and authority lines from the complementary OCR source', () => {
+  const merged = mergeComplementaryOcrText(
+    'Befundbericht\nGemeinschaftspraxis am Markt',
+    'Patientennummer: P-481516\nDiagnose: Kontrolluntersuchung\nAktenzeichen: AB-2026-44',
+  );
+
+  assert.match(merged, /Patientennummer: P-481516/);
+  assert.match(merged, /Diagnose: Kontrolluntersuchung/);
+  assert.match(merged, /Aktenzeichen: AB-2026-44/);
+});
+
+test('scores readable general documents without requiring payroll vocabulary', () => {
+  const documentText = `
+    Stadtverwaltung Beispielstadt
+    Bescheid
+    Aktenzeichen: BA-2026-882
+    Datum: 20.08.2026
+    Bitte beachten Sie die Rechtsbehelfsbelehrung.
+  `;
+
+  assert.ok(scoreDocumentOcrText(documentText) > scoreDocumentOcrText('BA 2026 882'));
+});

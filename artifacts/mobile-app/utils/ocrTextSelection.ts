@@ -1,35 +1,34 @@
 const documentSignals = [
-  /\b(?:lohn|gehalts|entgelt)abrechnung\b/i,
-  /\barbeitgeber\b/i,
-  /\barbeitnehmer(?:name)?\b/i,
-  /\babrechnungs(?:monat|zeitraum|periode|datum)\b/i,
-  /\b(?:nettoauszahlung|auszahlungsbetrag|nettobetrag|nettoentgelt|netto-bezüge)\b/i,
-  /\b(?:rechnung|rechnungsdatum|gesamtbetrag|zahlbetrag)\b/i,
-  /\b(?:fälligkeitsdatum|zahlbar bis|frist bis)\b/i,
-  /\b(?:absender|institution|firma)\b/i,
+  /\b(?:rechnung|bescheid|vertrag|abrechnung|befund|arztbrief|kontoauszug|mahnung)\b/i,
+  /\b(?:datum|fällig|frist|betrag|summe|zeichen|nummer|kundennummer)\b/i,
+  /\b(?:absender|empfänger|institution|firma|praxis|schule|versicherung|finanzamt|bank)\b/i,
+  /\b(?:straße|strasse|weg|platz)\b.{0,30}\b\d{4,5}\b/i,
+  /\b(?:€|EUR|IBAN|BIC|Steuernummer|Aktenzeichen)\b/i,
 ];
-
-const complementaryLineSignals =
-  /\b(?:arbeitgeber|arbeitnehmer|mitarbeiter|beschäftigte|personalnummer|pers\.?\s*-?\s*nr|netto|auszahlung|überweisung|auszahlungsbetrag|abrechnungs(?:monat|zeitraum|periode|datum)|abrechnung\s+(?:vom|für)|für\s+(?:den\s+)?monat|rechnungs?datum|fällig|zahlbar|datum|betrag)\b|(?:€|EUR|\d{1,2}[./-]\d{1,2}[./-]\d{2,4})/i;
-
-const labelOnlyLineSignal =
-  /^(?:arbeitgeber(?:bezeichnung|daten)?|betriebsname|firma|betrieb|betriebsstätte|arbeitnehmer(?:name)?|arbeitnehmer\s+name|name\s+des\s+arbeitnehmers|beschäftigtenname|mitarbeitername|an-name|abrechnungsdatum|datum\s+der\s+abrechnung|abrechnung\s+vom|abrechnungsmonat|abrechnungszeitraum|abrechnungsperiode|nettoauszahlung|auszahlungsbetrag|überweisungsbetrag|auszahlung\s+netto|nettoentgelt|nettobetrag|nettoverdienst|netto[-\s]?bezüge)\s*[:\-]?$/i;
 
 export function scoreDocumentOcrText(text: string) {
   const normalized = text.trim();
   if (!normalized) return 0;
+  const lines = normalized
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
   const letterCount = normalized.match(/\p{L}/gu)?.length ?? 0;
   const digitCount = normalized.match(/\d/g)?.length ?? 0;
   const signalCount = documentSignals.filter((pattern) => pattern.test(normalized)).length;
-  const labelledAmountCount =
-    normalized.match(
-      /\b(?:auszahlung|netto|betrag|zu zahlen)\b[^\d]{0,35}\d{1,3}(?:[.\s]\d{3})*,\d{2}/gi,
-    )?.length ?? 0;
+  const readableLineCount = lines.filter((line) => {
+    const useful = line.match(/[\p{L}\d]/gu)?.length ?? 0;
+    return useful >= 3 && useful / Math.max(1, line.length) >= 0.55;
+  }).length;
+  const replacementPenalty = (normalized.match(/[�□]/g)?.length ?? 0) * 40;
+  const noisePenalty = lines.filter((line) => /[^\p{L}\d\s.,:;()\-+€/%&@]/u.test(line)).length * 8;
   return (
-    Math.min(letterCount, 600) +
-    Math.min(digitCount, 120) * 0.4 +
-    signalCount * 140 +
-    labelledAmountCount * 90
+    Math.min(letterCount, 1200) +
+    Math.min(digitCount, 250) * 0.45 +
+    Math.min(readableLineCount, 80) * 16 +
+    signalCount * 70 -
+    replacementPenalty -
+    noisePenalty
   );
 }
 
@@ -50,6 +49,23 @@ function normalizedLine(line: string) {
     .replace(/[^\p{L}\d]+/gu, '');
 }
 
+function isReadableLine(line: string) {
+  const useful = line.match(/[\p{L}\d]/gu)?.length ?? 0;
+  if (useful < 2 || useful / Math.max(1, line.length) < 0.5) return false;
+  return !/[�□]/.test(line);
+}
+
+function isNearDuplicate(candidate: string, known: string[]) {
+  const normalized = normalizedLine(candidate);
+  if (!normalized) return true;
+  return known.some((existing) => {
+    if (existing === normalized) return true;
+    const shorter = existing.length < normalized.length ? existing : normalized;
+    const longer = existing.length < normalized.length ? normalized : existing;
+    return shorter.length >= 8 && longer.includes(shorter) && shorter.length / longer.length >= 0.78;
+  });
+}
+
 export function mergeComplementaryOcrText(
   optimizedText: string,
   originalText: string,
@@ -65,47 +81,16 @@ export function mergeComplementaryOcrText(
     .split(/\r?\n/)
     .map((line) => line.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
-  const knownLines = new Set(primaryLines.map(normalizedLine).filter(Boolean));
-  const knownBlocks = new Set<string>();
-  for (let index = 0; index < primaryLines.length - 1; index += 1) {
-    const label = primaryLines[index];
-    const value = primaryLines[index + 1];
-    if (labelOnlyLineSignal.test(label) && !labelOnlyLineSignal.test(value)) {
-      knownBlocks.add(`${normalizedLine(label)}=>${normalizedLine(value)}`);
-    }
-  }
+  const knownLines = primaryLines.map(normalizedLine).filter(Boolean);
   const secondaryLines = secondary
     .split(/\r?\n/)
     .map((line) => line.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
   const additions: string[] = [];
-  for (let index = 0; index < secondaryLines.length; index += 1) {
-    const line = secondaryLines[index];
-    const normalized = normalizedLine(line);
-    if (labelOnlyLineSignal.test(line) && secondaryLines[index + 1]) {
-      const valueLine = secondaryLines[index + 1];
-      const normalizedValue = normalizedLine(valueLine);
-      const blockKey = `${normalized}=>${normalizedValue}`;
-      if (
-        normalizedValue &&
-        !labelOnlyLineSignal.test(valueLine) &&
-        !knownBlocks.has(blockKey)
-      ) {
-        additions.push(line, valueLine);
-        knownBlocks.add(blockKey);
-        knownLines.add(normalized);
-        knownLines.add(normalizedValue);
-      }
-      index += 1;
-      continue;
-    }
-    if (
-      normalized &&
-      !knownLines.has(normalized) &&
-      complementaryLineSignals.test(line)
-    ) {
+  for (const line of secondaryLines) {
+    if (isReadableLine(line) && !isNearDuplicate(line, knownLines)) {
       additions.push(line);
-      knownLines.add(normalized);
+      knownLines.push(normalizedLine(line));
     }
   }
 

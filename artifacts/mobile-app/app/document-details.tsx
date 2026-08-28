@@ -29,6 +29,17 @@ const documentTypes = [
   'Nachweis',
 ];
 const statusOptions: DocumentStatus[] = ['Offen', 'Bezahlt', 'Erledigt', 'Später'];
+const additionalFieldLabels: Record<string, string> = {
+  referenceNumber: 'Aktenzeichen / Referenz',
+  customerNumber: 'Kundennummer',
+  invoiceNumber: 'Rechnungsnummer',
+  contractNumber: 'Vertragsnummer',
+  insuranceNumber: 'Versicherungsnummer',
+  iban: 'IBAN',
+  taxNumber: 'Steuernummer / Steuer-ID',
+  patientNumber: 'Patienten- / Fallnummer',
+  schoolReference: 'Schul- / Betreuungsreferenz',
+};
 
 export default function DocumentDetailsScreen() {
   const colors = useColors();
@@ -55,6 +66,7 @@ export default function DocumentDetailsScreen() {
   );
   const [tags, setTags] = useState('');
   const [note, setNote] = useState('');
+  const [additionalFields, setAdditionalFields] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const savedRef = useRef(false);
@@ -107,6 +119,14 @@ export default function DocumentDetailsScreen() {
     }
     const suggestedTags = fields.tags?.value;
     if (Array.isArray(suggestedTags)) setTags(suggestedTags.join(', '));
+    const extractedAdditionalFields: Record<string, string> = {};
+    for (const field of Object.keys(additionalFieldLabels)) {
+      const value = fields[field as DocumentAnalysisField]?.value;
+      if (typeof value === 'string' && value.trim()) {
+        extractedAdditionalFields[field] = value;
+      }
+    }
+    setAdditionalFields(extractedAdditionalFields);
   }, [pendingAsset]);
 
   const analysisHint = (field: DocumentAnalysisField) =>
@@ -159,6 +179,13 @@ export default function DocumentDetailsScreen() {
       originalPageUris: pendingAsset.originalPageUris,
       ocrText: pendingAsset.analysis?.text || undefined,
       analysisUncertainFields: pendingAsset.analysis?.uncertainFields,
+      structuredFields: additionalFields,
+      analysisConfidenceByField: Object.fromEntries(
+        Object.entries(pendingAsset.analysis?.fields ?? {}).map(([field, value]) => [
+          field,
+          value?.confidence,
+        ]),
+      ),
       createdAt: new Date().toISOString(),
     };
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -324,6 +351,34 @@ export default function DocumentDetailsScreen() {
         <Text style={[styles.label, { color: colors.navy }]}>Betrag <Text style={{ color: colors.mutedForeground, fontFamily: 'Inter_400Regular' }}>(optional)</Text></Text>
         <TextInput value={amount} onChangeText={setAmount} placeholder="z. B. 128,40 €" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} keyboardType="decimal-pad" />
         {analysisHint('amount')}
+
+        {Object.entries(additionalFields).map(([field, value]) => (
+          <View key={field}>
+            <Text style={[styles.label, { color: colors.navy }]}>
+              {additionalFieldLabels[field] ?? field}
+            </Text>
+            <TextInput
+              value={value}
+              onChangeText={(nextValue) =>
+                setAdditionalFields((current) => ({
+                  ...current,
+                  [field]: nextValue,
+                }))
+              }
+              placeholderTextColor={colors.mutedForeground}
+              style={[
+                styles.input,
+                {
+                  color: colors.navy,
+                  backgroundColor: colors.card,
+                  borderColor: colors.border,
+                },
+              ]}
+              testID={`details-${field}-input`}
+            />
+            {analysisHint(field as DocumentAnalysisField)}
+          </View>
+        ))}
 
         <Text style={[styles.label, { color: colors.navy }]}>Zugehörige Person</Text>
         <TextInput
