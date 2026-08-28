@@ -34,7 +34,7 @@ router.get("/install/documenta", (_request, response) => {
       <h1>Documenta Android APK</h1>
       <p>A csomag tartalmazza az offline ML Kit OCR-t, a natív dokumentumszkennert és a javított PDF-képoptimalizálást.</p>
       <a href="../downloads/${apkFileName}">APK letöltése</a>
-      <p><small>Méret: 191,72 MB. Build: 878fc133-4c23-46b7-b459-f32be85168d3</small></p>
+      <p><small>Méret: 191,78 MB. Build: a932f033-f21c-47c6-a23f-c91f47153fe3</small></p>
     </main>
   </body>
 </html>`);
