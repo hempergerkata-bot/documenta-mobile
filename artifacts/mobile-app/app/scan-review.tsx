@@ -17,6 +17,7 @@ import { useApp } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
 import { scanDocumentPages } from '@/utils/documentScanner';
 import { createPersistentScannedDocument, deleteTemporaryScanPages } from '@/utils/scanPdf';
+import { recognizeAndAnalyzeDocument } from '@/utils/documentOcr';
 
 export default function ScanReviewScreen() {
   const colors = useColors();
@@ -25,11 +26,13 @@ export default function ScanReviewScreen() {
   const [pages, setPages] = useState<string[]>(pendingAsset?.pageUris ?? []);
   const [selectedPage, setSelectedPage] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState('');
   const [error, setError] = useState('');
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
 
   const scanMore = async (replaceIndex?: number) => {
     setBusy(true);
+    setBusyLabel('Scanner wird geöffnet…');
     setError('');
     try {
       const result = await scanDocumentPages();
@@ -51,6 +54,7 @@ export default function ScanReviewScreen() {
       setError('Der Scanner konnte nicht erneut geöffnet werden. Prüfe den Kamerazugriff.');
     } finally {
       setBusy(false);
+      setBusyLabel('');
     }
   };
 
@@ -68,24 +72,38 @@ export default function ScanReviewScreen() {
   const createPdf = async () => {
     if (pages.length === 0 || busy) return;
     setBusy(true);
+    setBusyLabel('Seiten werden verbessert…');
     setError('');
     const documentId = `document-${Date.now()}`;
     try {
       const result = await createPersistentScannedDocument(pages, documentId);
+      setBusyLabel('Text und Dokumenttyp werden erkannt…');
+      let analysis;
+      let ocrStatus: 'complete' | 'empty' | 'failed' = 'failed';
+      try {
+        analysis = await recognizeAndAnalyzeDocument(result.pageUris);
+        ocrStatus = analysis.text ? 'complete' : 'empty';
+      } catch {
+        ocrStatus = 'failed';
+      }
       setPendingAsset({
         uri: result.pdfUri,
         pdfUri: result.pdfUri,
         pageUris: result.pageUris,
+        originalPageUris: result.originalPageUris,
         name: `Documenta Scan · ${pages.length} ${pages.length === 1 ? 'Seite' : 'Seiten'}`,
         mimeType: 'application/pdf',
         source: 'scanner',
         documentId,
+        analysis,
+        ocrStatus,
       });
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace('/document-details');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Die PDF-Datei konnte nicht erstellt werden.');
       setBusy(false);
+      setBusyLabel('');
     }
   };
 
@@ -183,8 +201,8 @@ export default function ScanReviewScreen() {
 
         <Pressable disabled={busy} onPress={() => void createPdf()} style={[styles.createButton, { backgroundColor: busy ? colors.muted : colors.coral }]} testID="create-scan-pdf-button">
           <View>
-            <Text style={[styles.createTitle, { color: colors.white }]}>{busy ? 'PDF wird erstellt…' : 'PDF erstellen & weiter'}</Text>
-            <Text style={[styles.createSubtitle, { color: colors.white }]}>{pages.length} {pages.length === 1 ? 'Seite' : 'Seiten'} · dauerhaft speichern</Text>
+            <Text style={[styles.createTitle, { color: colors.white }]}>{busy ? busyLabel || 'PDF wird erstellt…' : 'PDF erstellen & analysieren'}</Text>
+            <Text style={[styles.createSubtitle, { color: colors.white }]}>{pages.length} {pages.length === 1 ? 'Seite' : 'Seiten'} · Original + optimierte PDF · OCR lokal</Text>
           </View>
           <Feather name="arrow-right" size={20} color={colors.white} />
         </Pressable>

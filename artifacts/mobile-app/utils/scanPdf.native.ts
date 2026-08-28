@@ -1,6 +1,7 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import { copyAsync } from 'expo-file-system/legacy';
 import { PDFDocument } from 'pdf-lib/cjs/index.js';
+import { enhanceScanPage } from '@/utils/scanImageEnhancement';
 
 function normalizeFileUri(uri: string) {
   if (uri.startsWith('file://') || uri.startsWith('content://')) return uri;
@@ -22,7 +23,9 @@ export async function createPersistentScannedDocument(
   const directory = new Directory(Paths.document, 'documenta');
   directory.create({ intermediates: true, idempotent: true });
   const persistentPageUris: string[] = [];
+  const persistentOriginalPageUris: string[] = [];
   const persistentPageFiles: File[] = [];
+  const persistentOriginalPageFiles: File[] = [];
   const temporarySourceFiles: File[] = [];
   const pdfFile = new File(directory, `${documentId}.pdf`);
   const pdf = await PDFDocument.create();
@@ -32,20 +35,28 @@ export async function createPersistentScannedDocument(
   try {
     for (const [index, pageUri] of pageUris.entries()) {
       const extension = getImageExtension(pageUri);
-      const pageFile = new File(directory, `${documentId}-page-${index + 1}.${extension}`);
+      const originalPageFile = new File(
+        directory,
+        `${documentId}-original-page-${index + 1}.${extension}`,
+      );
+      const pageFile = new File(directory, `${documentId}-page-${index + 1}.jpg`);
+      if (originalPageFile.exists) originalPageFile.delete();
       if (pageFile.exists) pageFile.delete();
 
       const normalizedSourceUri = normalizeFileUri(pageUri);
-      await copyAsync({ from: normalizedSourceUri, to: pageFile.uri });
+      await copyAsync({ from: normalizedSourceUri, to: originalPageFile.uri });
+      if (!originalPageFile.exists) {
+        throw new Error(`Das Original der Seite ${index + 1} konnte nicht gespeichert werden.`);
+      }
+      persistentOriginalPageFiles.push(originalPageFile);
+      persistentPageFiles.push(pageFile);
+      await enhanceScanPage(originalPageFile.uri, pageFile.uri);
       if (!pageFile.exists) {
-        throw new Error(`Die gescannte Seite ${index + 1} konnte nicht gespeichert werden.`);
+        throw new Error(`Die verbesserte Seite ${index + 1} konnte nicht gespeichert werden.`);
       }
 
       const bytes = await pageFile.bytes();
-      const image =
-        extension === 'png'
-          ? await pdf.embedPng(bytes)
-          : await pdf.embedJpg(bytes);
+      const image = await pdf.embedJpg(bytes);
       const pageWidth = 595;
       const pageHeight = 842;
       const scale = Math.min(pageWidth / image.width, pageHeight / image.height);
@@ -59,7 +70,7 @@ export async function createPersistentScannedDocument(
         height,
       });
       persistentPageUris.push(pageFile.uri);
-      persistentPageFiles.push(pageFile);
+      persistentOriginalPageUris.push(originalPageFile.uri);
       if (normalizedSourceUri.startsWith('file://')) {
         temporarySourceFiles.push(new File(normalizedSourceUri));
       }
@@ -72,9 +83,17 @@ export async function createPersistentScannedDocument(
     }
 
     deleteFilesBestEffort(temporarySourceFiles);
-    return { pdfUri: pdfFile.uri, pageUris: persistentPageUris };
+    return {
+      pdfUri: pdfFile.uri,
+      pageUris: persistentPageUris,
+      originalPageUris: persistentOriginalPageUris,
+    };
   } catch (error) {
-    deleteFilesBestEffort([...persistentPageFiles, pdfFile]);
+    deleteFilesBestEffort([
+      ...persistentPageFiles,
+      ...persistentOriginalPageFiles,
+      pdfFile,
+    ]);
     throw error;
   }
 }
@@ -90,8 +109,9 @@ export function deleteTemporaryScanPages(pageUris: string[]) {
 export function deletePersistentScannedDocument(
   pdfUri?: string,
   pageUris: string[] = [],
+  originalPageUris: string[] = [],
 ) {
-  const uris = [pdfUri, ...pageUris].filter(
+  const uris = [pdfUri, ...pageUris, ...originalPageUris].filter(
     (uri): uri is string => !!uri && uri.startsWith(Paths.document.uri),
   );
   deleteFilesBestEffort(uris.map((uri) => new File(uri)));

@@ -39,12 +39,19 @@ export default function SavedDocumentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { documents } = useApp();
   const [fullScreen, setFullScreen] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [originalPageIndex, setOriginalPageIndex] = useState(0);
   const document = documents.find((item) => item.id === id);
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
-  const previewUri = document?.pdfUri ?? document?.uri;
+  const originalPages = document?.originalPageUris ?? [];
+  const previewUri =
+    showOriginal && originalPages.length > 0
+      ? originalPages[originalPageIndex]
+      : document?.pdfUri ?? document?.uri;
   const isPdf =
-    document?.mimeType?.toLowerCase().includes('pdf') ||
-    previewUri?.toLowerCase().split('?')[0].endsWith('.pdf');
+    !showOriginal &&
+    (document?.mimeType?.toLowerCase().includes('pdf') ||
+      previewUri?.toLowerCase().split('?')[0].endsWith('.pdf'));
 
   if (!document) {
     return (
@@ -98,7 +105,81 @@ export default function SavedDocumentDetailScreen() {
           </View>
 
           <View style={[styles.previewCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            {originalPages.length > 0 ? (
+              <View style={[styles.modeSwitch, { backgroundColor: colors.background }]}>
+                <Pressable
+                  onPress={() => setShowOriginal(false)}
+                  style={[
+                    styles.modeButton,
+                    !showOriginal && { backgroundColor: colors.navy },
+                  ]}
+                  testID="show-enhanced-document"
+                >
+                  <Text
+                    style={[
+                      styles.modeText,
+                      { color: !showOriginal ? colors.white : colors.navy },
+                    ]}
+                  >
+                    Optimierte PDF
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setShowOriginal(true)}
+                  style={[
+                    styles.modeButton,
+                    showOriginal && { backgroundColor: colors.navy },
+                  ]}
+                  testID="show-original-document"
+                >
+                  <Text
+                    style={[
+                      styles.modeText,
+                      { color: showOriginal ? colors.white : colors.navy },
+                    ]}
+                  >
+                    Original
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
             <View style={styles.previewContent}>{preview}</View>
+            {showOriginal && originalPages.length > 1 ? (
+              <View style={styles.originalNavigation}>
+                <Pressable
+                  disabled={originalPageIndex === 0}
+                  onPress={() =>
+                    setOriginalPageIndex((current) => Math.max(0, current - 1))
+                  }
+                  style={[
+                    styles.pageNavigationButton,
+                    { borderColor: colors.border },
+                    originalPageIndex === 0 && styles.disabled,
+                  ]}
+                >
+                  <Feather name="chevron-left" size={16} color={colors.navy} />
+                </Pressable>
+                <Text style={[styles.pageIndicator, { color: colors.navy }]}>
+                  Original {originalPageIndex + 1}/{originalPages.length}
+                </Text>
+                <Pressable
+                  disabled={originalPageIndex === originalPages.length - 1}
+                  onPress={() =>
+                    setOriginalPageIndex((current) =>
+                      Math.min(originalPages.length - 1, current + 1),
+                    )
+                  }
+                  style={[
+                    styles.pageNavigationButton,
+                    { borderColor: colors.border },
+                    originalPageIndex === originalPages.length - 1 &&
+                      styles.disabled,
+                  ]}
+                >
+                  <Feather name="chevron-right" size={16} color={colors.navy} />
+                </Pressable>
+              </View>
+            ) : null}
             {previewUri ? (
               <Pressable
                 onPress={() => setFullScreen(true)}
@@ -116,6 +197,7 @@ export default function SavedDocumentDetailScreen() {
             <MetadataRow label="Titel" value={document.title} colors={colors} />
             <MetadataRow label="Absender" value={document.sender} colors={colors} />
             <MetadataRow label="Kategorie" value={document.category} colors={colors} />
+            <MetadataRow label="Unterkategorie" value={document.subcategory} colors={colors} />
             <MetadataRow label="Dokumenttyp" value={document.documentType} colors={colors} />
             <MetadataRow label="Dokumentdatum" value={document.documentDate} colors={colors} />
             <MetadataRow label="Frist" value={document.dueDate} colors={colors} />
@@ -124,6 +206,19 @@ export default function SavedDocumentDetailScreen() {
             <MetadataRow label="Status" value={document.status} colors={colors} />
             <MetadataRow label="Tags" value={document.tags.join(', ')} colors={colors} />
             <MetadataRow label="Notiz" value={document.note} colors={colors} />
+            <MetadataRow
+              label="Lokale OCR"
+              value={
+                document.ocrText
+                  ? `${document.ocrText.length} Zeichen erkannt${
+                      document.analysisUncertainFields?.length
+                        ? ` · ${document.analysisUncertainFields.length} unsichere Felder geprüft`
+                        : ''
+                    }`
+                  : undefined
+              }
+              colors={colors}
+            />
           </View>
         </View>
       </ScrollView>
@@ -156,8 +251,14 @@ const styles = StyleSheet.create({
   headerCopy: { flex: 1, marginLeft: 12 },
   kicker: { fontSize: 10, fontFamily: 'Inter_700Bold', letterSpacing: 1.8, marginBottom: 4 },
   heading: { fontSize: 21, lineHeight: 26, fontFamily: 'Inter_700Bold', letterSpacing: -0.4 },
-  previewCard: { height: 430, borderRadius: 20, borderWidth: 1, padding: 10, marginBottom: 27, overflow: 'hidden' },
+  previewCard: { height: 490, borderRadius: 20, borderWidth: 1, padding: 10, marginBottom: 27, overflow: 'hidden' },
+  modeSwitch: { borderRadius: 12, padding: 3, flexDirection: 'row', marginBottom: 8 },
+  modeButton: { flex: 1, minHeight: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  modeText: { fontSize: 10, fontFamily: 'Inter_700Bold' },
   previewContent: { flex: 1, borderRadius: 13, overflow: 'hidden' },
+  originalNavigation: { minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, paddingTop: 8 },
+  pageNavigationButton: { width: 34, height: 34, borderRadius: 11, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  pageIndicator: { minWidth: 92, textAlign: 'center', fontSize: 10, fontFamily: 'Inter_700Bold' },
   image: { width: '100%', height: '100%' },
   noOriginal: { flex: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center', padding: 24 },
   noOriginalTitle: { fontSize: 14, fontFamily: 'Inter_700Bold', marginTop: 12 },
@@ -179,4 +280,5 @@ const styles = StyleSheet.create({
   primaryButton: { borderRadius: 14, paddingHorizontal: 20, paddingVertical: 13 },
   primaryButtonText: { color: '#ffffff', fontSize: 12, fontFamily: 'Inter_700Bold' },
   pressed: { opacity: 0.72, transform: [{ scale: 0.985 }] },
+  disabled: { opacity: 0.35 },
 });

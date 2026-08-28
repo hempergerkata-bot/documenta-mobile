@@ -7,6 +7,7 @@ import React, {
   useMemo,
   useState,
 } from 'react';
+import type { DocumentAnalysisResult } from '@/utils/documentAnalysis';
 
 export type DocumentStatus = 'Offen' | 'Bezahlt' | 'Erledigt' | 'Später';
 
@@ -28,6 +29,9 @@ export type DocumentRecord = {
   mimeType?: string;
   pdfUri?: string;
   pageUris?: string[];
+  originalPageUris?: string[];
+  ocrText?: string;
+  analysisUncertainFields?: string[];
   createdAt: string;
 };
 
@@ -38,7 +42,10 @@ export type PendingAsset = {
   source: 'camera' | 'gallery' | 'file' | 'scanner';
   pdfUri?: string;
   pageUris?: string[];
+  originalPageUris?: string[];
   documentId?: string;
+  analysis?: DocumentAnalysisResult;
+  ocrStatus?: 'complete' | 'empty' | 'failed';
 };
 
 type StoredState = {
