@@ -215,7 +215,6 @@ test('leaves amount unresolved when only a generic payout component exists', () 
     Arbeitnehmer: Tobias Beispiel
     Auszahlungsbetrag Prämie 500,00 EUR
     Überweisungsbetrag Pfändung 250,00 EUR
-    Netto-Bezüge 2798,77 EUR
   `);
 
   assert.equal(result.fields.amount, undefined);
@@ -249,4 +248,32 @@ test('keeps an explicit payroll document date high confidence', () => {
 
   assert.equal(result.fields.documentDate?.value, '31.08.2026');
   assert.equal(result.fields.documentDate?.confidence, 'high');
+});
+
+test('uses a direct Netto-Bezüge amount as a reviewable payroll suggestion', () => {
+  const result = analyzeGermanDocumentText(`
+    Lohnabrechnung
+    Arbeitgeber: Nordlicht Logistik GmbH
+    Arbeitnehmer: Tobias Beispiel
+    Netto-Bezüge 236,32 EUR
+  `);
+
+  assert.equal(result.fields.amount?.value, '236,32 EUR');
+  assert.equal(result.fields.amount?.confidence, 'medium');
+  assert.ok(result.uncertainFields.includes('amount'));
+});
+
+test('recognizes an unlabeled payroll recipient from a nearby postal address', () => {
+  const result = analyzeGermanDocumentText(`
+    Lohn- und Gehaltsabrechnung für den Monat August 2026
+    Nordlicht Logistik GmbH
+    Katalin Monika Hemperger
+    Weberstraße 25
+    89597 Beispielstadt
+    Abrechnung vom 31.08.2026
+    Nettoauszahlung 2548,77 EUR
+  `);
+
+  assert.equal(result.fields.person?.value, 'Katalin Monika Hemperger');
+  assert.equal(result.fields.person?.confidence, 'medium');
 });

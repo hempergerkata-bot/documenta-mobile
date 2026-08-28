@@ -312,16 +312,19 @@ function findPerson(lines: string[], isPayroll: boolean) {
   }
 
   if (!isPayroll) return undefined;
-  for (let index = 0; index < Math.min(lines.length - 1, 35); index += 1) {
+  for (let index = 0; index < Math.min(lines.length - 3, 35); index += 1) {
     const candidate = lines[index];
-    const nextLine = lines[index + 1];
+    const followingLines = lines.slice(index + 1, index + 4);
     if (
       /^[\p{Lu}][\p{L}.'-]+(?:\s+[\p{Lu}][\p{L}.'-]+){1,3}$/u.test(candidate) &&
-      /^(?:\p{L}[\p{L}\s.-]*\s+)?\d{4,5}\s+\p{L}/u.test(nextLine)
+      !/\b(?:GmbH|AG|KG|OHG|UG|e\.?\s*V\.?|Krankenkasse|Versicherung)\b/i.test(candidate) &&
+      followingLines.some((line) =>
+        /\b\d{4,5}\s+\p{L}/u.test(line),
+      )
     ) {
       return {
         value: candidate,
-        evidence: `${candidate} ${nextLine}`,
+        evidence: `${candidate} ${followingLines.join(' ')}`,
         confidence: 'medium' as const,
       };
     }
@@ -330,17 +333,25 @@ function findPerson(lines: string[], isPayroll: boolean) {
 }
 
 function findAmount(text: string, lines: string[], documentType?: string) {
-  const labels =
+  const labels: Array<{ label: string; confidence: AnalysisConfidence }> =
     documentType === 'Lohnabrechnung / Gehaltsabrechnung'
       ? [
-          'Netto-Auszahlungsbetrag',
-          'Netto Auszahlungsbetrag',
-          'Nettoauszahlung',
-          'Auszahlungsbetrag',
-          'Auszahlung netto',
+          { label: 'Netto-Auszahlungsbetrag', confidence: 'high' },
+          { label: 'Netto Auszahlungsbetrag', confidence: 'high' },
+          { label: 'Nettoauszahlung', confidence: 'high' },
+          { label: 'Auszahlungsbetrag', confidence: 'high' },
+          { label: 'Auszahlung netto', confidence: 'high' },
+          { label: 'Netto-Bezüge', confidence: 'medium' },
+          { label: 'Netto Bezüge', confidence: 'medium' },
         ]
-      : ['Rechnungsbetrag', 'Gesamtbetrag', 'Zahlbetrag', 'Forderungsbetrag', 'Zu zahlen'];
-  for (const label of labels) {
+      : [
+          { label: 'Rechnungsbetrag', confidence: 'high' },
+          { label: 'Gesamtbetrag', confidence: 'high' },
+          { label: 'Zahlbetrag', confidence: 'high' },
+          { label: 'Forderungsbetrag', confidence: 'high' },
+          { label: 'Zu zahlen', confidence: 'high' },
+        ];
+  for (const { label, confidence } of labels) {
     for (const [lineIndex, line] of lines.entries()) {
       const forward = line.match(
         new RegExp(`\\b${label}\\b\\s*[:=\\-]?\\s*${amountPattern}`, 'i'),
@@ -349,6 +360,7 @@ function findAmount(text: string, lines: string[], documentType?: string) {
         return {
           value: forward[1].replace(/\s+/g, ' ').trim(),
           evidence: forward[0],
+          confidence,
         };
       }
       const reverse = line.match(
@@ -358,6 +370,7 @@ function findAmount(text: string, lines: string[], documentType?: string) {
         return {
           value: reverse[1].replace(/\s+/g, ' ').trim(),
           evidence: reverse[0],
+          confidence,
         };
       }
       if (
@@ -372,6 +385,7 @@ function findAmount(text: string, lines: string[], documentType?: string) {
           return {
             value: amount[1].replace(/\s+/g, ' ').trim(),
             evidence: `${line} ${lines[lineIndex + 1]}`,
+            confidence,
           };
         }
       }
@@ -464,7 +478,9 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
   if (dueDate) fields.dueDate = suggestion(dueDate.value, 'high', dueDate.evidence);
 
   const amount = findAmount(text, lines, documentType);
-  if (amount) fields.amount = suggestion(amount.value, 'high', amount.evidence);
+  if (amount) {
+    fields.amount = suggestion(amount.value, amount.confidence, amount.evidence);
+  }
 
   const person = findPerson(lines, isPayroll);
   if (person) {
