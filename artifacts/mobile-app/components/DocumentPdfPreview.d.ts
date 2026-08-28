@@ -1,0 +1,1 @@
+export function DocumentPdfPreview(props: { uri: string }): React.ReactElement;
