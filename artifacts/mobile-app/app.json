@@ -8,6 +8,11 @@
     "scheme": "mobile-app",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "extra": {
+      "eas": {
+        "projectId": "4cf66cf9-0c53-4830-8a93-85e76b72178a"
+      }
+    },
     "splash": {
       "image": "./assets/images/icon.png",
       "resizeMode": "contain",
