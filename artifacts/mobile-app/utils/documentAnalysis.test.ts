@@ -24,6 +24,7 @@ test('extracts evidence-backed fields from a German payroll statement', () => {
   assert.equal(result.fields.documentDate?.value, '31.07.2026');
   assert.equal(result.fields.amount?.value, '2.734,18 EUR');
   assert.equal(result.fields.subcategory?.value, 'Lohn & Gehalt');
+  assert.equal(result.fields.payrollPeriod?.value, 'Juli 2026');
   assert.equal(
     result.fields.title?.value,
     'Lohnabrechnung Juli 2026 – Mustertechnik GmbH',
@@ -85,6 +86,7 @@ test('extracts payroll fields when OCR splits labels and values across lines', (
   assert.equal(result.fields.sender?.value, 'Nordlicht Logistik GmbH');
   assert.equal(result.fields.person?.value, 'Tobias Beispiel');
   assert.equal(result.fields.documentDate?.value, '31.08.2026');
+  assert.equal(result.fields.payrollPeriod?.value, '08/2026');
   assert.equal(result.fields.amount?.value, '2.548,77 EUR');
   assert.equal(
     result.fields.title?.value,
@@ -140,4 +142,107 @@ test('does not mistake a generic contact name for the employee', () => {
 
   assert.equal(result.fields.person?.value, 'Tobias Beispiel');
   assert.notEqual(result.fields.person?.value, 'Petra Personalbüro');
+});
+
+test('extracts compact DATEV-style payroll OCR with an ungrouped payout', () => {
+  const result = analyzeGermanDocumentText(`
+    Lohn- und Gehaltsabrechnung für den Monat August 2026
+    Arbeitgeber: Nordlicht Logistik GmbH Arbeitnehmer: Tobias Beispiel
+    Abrechnung vom 31.08.2026
+    Steuer-Brutto 3920,00
+    Netto-Auszahlungsbetrag 2548,77 EUR
+  `);
+
+  assert.equal(result.fields.sender?.value, 'Nordlicht Logistik GmbH');
+  assert.equal(result.fields.person?.value, 'Tobias Beispiel');
+  assert.equal(result.fields.documentDate?.value, '31.08.2026');
+  assert.equal(result.fields.payrollPeriod?.value, 'August 2026');
+  assert.equal(result.fields.amount?.value, '2548,77 EUR');
+});
+
+test('does not treat generic net or transfer table rows as the payout', () => {
+  const result = analyzeGermanDocumentText(`
+    Gehaltsabrechnung
+    Arbeitgeber: Beispiel Handel AG
+    Arbeitnehmer: Nora Muster
+    Netto Steuer 611,42
+    Überweisung Pfändung 250,00
+    Bruttoentgelt 4100,00
+  `);
+
+  assert.equal(result.fields.amount, undefined);
+  assert.ok(result.unresolvedFields.includes('amount'));
+});
+
+test('never consumes a neighboring label as a split employer value', () => {
+  const result = analyzeGermanDocumentText(`
+    Gehaltsabrechnung
+    Arbeitgeber
+    Abrechnungsdatum
+    31.08.2026
+    Arbeitgeber
+    Nordlicht Logistik GmbH
+    Arbeitnehmer
+    Tobias Beispiel
+    Auszahlungsbetrag
+    2548,77 EUR
+  `);
+
+  assert.equal(result.fields.sender?.value, 'Nordlicht Logistik GmbH');
+  assert.notEqual(result.fields.sender?.value, 'Abrechnungsdatum');
+  assert.equal(result.fields.person?.value, 'Tobias Beispiel');
+  assert.equal(result.fields.amount?.value, '2548,77 EUR');
+});
+
+test('ignores a generic advance payout and selects the explicit final payout', () => {
+  const result = analyzeGermanDocumentText(`
+    Gehaltsabrechnung
+    Arbeitgeber: Nordlicht Logistik GmbH
+    Arbeitnehmer: Tobias Beispiel
+    Auszahlung Vorschuss 500,00 EUR
+    Nettoauszahlung 2548,77 EUR
+  `);
+
+  assert.equal(result.fields.amount?.value, '2548,77 EUR');
+});
+
+test('leaves amount unresolved when only a generic payout component exists', () => {
+  const result = analyzeGermanDocumentText(`
+    Gehaltsabrechnung
+    Arbeitgeber: Nordlicht Logistik GmbH
+    Arbeitnehmer: Tobias Beispiel
+    Auszahlung Prämie 500,00 EUR
+  `);
+
+  assert.equal(result.fields.amount, undefined);
+  assert.ok(result.unresolvedFields.includes('amount'));
+});
+
+test('does not use a generic personal date as the payroll document date', () => {
+  const result = analyzeGermanDocumentText(`
+    Gehaltsabrechnung
+    Arbeitgeber: Nordlicht Logistik GmbH
+    Arbeitnehmer: Tobias Beispiel
+    Geburtsdatum: 01.01.1990
+    Eintrittsdatum: 15.03.2020
+    Datum: 01.01.1990
+    Nettoauszahlung: 2548,77 EUR
+  `);
+
+  assert.equal(result.fields.documentDate, undefined);
+  assert.ok(result.unresolvedFields.includes('documentDate'));
+});
+
+test('keeps an explicit payroll document date high confidence', () => {
+  const result = analyzeGermanDocumentText(`
+    Gehaltsabrechnung
+    Arbeitgeber: Nordlicht Logistik GmbH
+    Arbeitnehmer: Tobias Beispiel
+    Geburtsdatum: 01.01.1990
+    Abrechnung vom 31.08.2026
+    Nettoauszahlung: 2548,77 EUR
+  `);
+
+  assert.equal(result.fields.documentDate?.value, '31.08.2026');
+  assert.equal(result.fields.documentDate?.confidence, 'high');
 });

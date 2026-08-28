@@ -200,6 +200,7 @@ export default function SavedDocumentDetailScreen() {
             <MetadataRow label="Unterkategorie" value={document.subcategory} colors={colors} />
             <MetadataRow label="Dokumenttyp" value={document.documentType} colors={colors} />
             <MetadataRow label="Dokumentdatum" value={document.documentDate} colors={colors} />
+            <MetadataRow label="Abrechnungszeitraum" value={document.payrollPeriod} colors={colors} />
             <MetadataRow label="Frist" value={document.dueDate} colors={colors} />
             <MetadataRow label="Betrag" value={document.amount} colors={colors} />
             <MetadataRow label="Person" value={document.person} colors={colors} />

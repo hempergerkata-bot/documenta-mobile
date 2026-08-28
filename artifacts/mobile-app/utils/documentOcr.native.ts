@@ -5,7 +5,7 @@ import {
   analyzeGermanDocumentText,
   DocumentAnalysisResult,
 } from '@/utils/documentAnalysis';
-import { chooseBestOcrText } from '@/utils/ocrTextSelection';
+import { mergeComplementaryOcrText } from '@/utils/ocrTextSelection';
 
 async function recognizePage(pageUri?: string) {
   if (!pageUri) return '';
@@ -28,7 +28,10 @@ export async function recognizeAndAnalyzeDocument(
   for (const [pageIndex, pageUri] of pageUris.entries()) {
     const optimizedText = await recognizePage(pageUri);
     const originalText = await recognizePage(originalPageUris[pageIndex]);
-    const selectedText = chooseBestOcrText(optimizedText, originalText);
+    const selectedText = mergeComplementaryOcrText(
+      optimizedText,
+      originalText,
+    );
 
     if (selectedText) {
       pageTexts.push(`--- Seite ${pageIndex + 1} ---\n${selectedText}`);

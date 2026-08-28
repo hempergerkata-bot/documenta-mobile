@@ -44,6 +44,7 @@ export default function DocumentDetailsScreen() {
     pendingAsset?.source === 'scanner' ? '' : 'Rechnung',
   );
   const [documentDate, setDocumentDate] = useState('');
+  const [payrollPeriod, setPayrollPeriod] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [amount, setAmount] = useState('');
   const [person, setPerson] = useState(
@@ -96,6 +97,7 @@ export default function DocumentDetailsScreen() {
     setSubcategory(stringValue('subcategory'));
     setDocumentType(stringValue('documentType'));
     setDocumentDate(stringValue('documentDate'));
+    setPayrollPeriod(stringValue('payrollPeriod'));
     setDueDate(stringValue('dueDate'));
     setAmount(stringValue('amount'));
     setPerson(stringValue('person'));
@@ -143,6 +145,7 @@ export default function DocumentDetailsScreen() {
       subcategory: subcategory.trim(),
       documentType,
       documentDate: documentDate.trim(),
+      payrollPeriod: payrollPeriod.trim() || undefined,
       dueDate: dueDate.trim() || undefined,
       amount: amount.trim() || undefined,
       person,
@@ -302,6 +305,21 @@ export default function DocumentDetailsScreen() {
             {analysisHint('dueDate')}
           </View>
         </View>
+
+        {documentType === 'Lohnabrechnung / Gehaltsabrechnung' ? (
+          <>
+            <Text style={[styles.label, { color: colors.navy }]}>Abrechnungszeitraum</Text>
+            <TextInput
+              value={payrollPeriod}
+              onChangeText={setPayrollPeriod}
+              placeholder="z. B. Juli 2026 oder 07/2026"
+              placeholderTextColor={colors.mutedForeground}
+              style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]}
+              testID="details-payroll-period-input"
+            />
+            {analysisHint('payrollPeriod')}
+          </>
+        ) : null}
 
         <Text style={[styles.label, { color: colors.navy }]}>Betrag <Text style={{ color: colors.mutedForeground, fontFamily: 'Inter_400Regular' }}>(optional)</Text></Text>
         <TextInput value={amount} onChangeText={setAmount} placeholder="z. B. 128,40 €" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} keyboardType="decimal-pad" />

@@ -19,6 +19,7 @@ export type DocumentRecord = {
   subcategory: string;
   documentType: string;
   documentDate: string;
+  payrollPeriod?: string;
   dueDate?: string;
   amount?: string;
   person: string;

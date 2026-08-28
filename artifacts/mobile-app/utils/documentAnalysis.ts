@@ -7,6 +7,7 @@ export type DocumentAnalysisField =
   | 'subcategory'
   | 'documentType'
   | 'documentDate'
+  | 'payrollPeriod'
   | 'dueDate'
   | 'amount'
   | 'person'
@@ -120,7 +121,8 @@ const rules: DocumentRule[] = [
 const monthNames =
   'Januar|Februar|März|Maerz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember';
 const dateValuePattern = `(?:\\d{1,2}[.\\-/]\\d{1,2}[.\\-/]\\d{2,4}|\\d{1,2}\\.\\s*(?:${monthNames})\\s+\\d{4})`;
-const amountPattern = '(\\d{1,3}(?:[.\\s]\\d{3})*,\\d{2}\\s*(?:€|EUR)?)';
+const amountPattern =
+  '((?:\\d{1,3}(?:[.\\s]\\d{3})+|\\d{1,6})[,.]\\d{2}\\s*(?:€|EUR)?)';
 const requestedFields: DocumentAnalysisField[] = [
   'title',
   'sender',
@@ -128,6 +130,7 @@ const requestedFields: DocumentAnalysisField[] = [
   'subcategory',
   'documentType',
   'documentDate',
+  'payrollPeriod',
   'dueDate',
   'amount',
   'person',
@@ -139,6 +142,12 @@ function normalizeLines(text: string) {
     .split(/\r?\n/)
     .map((line) => line.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
+}
+
+function isDocumentLabelLine(line: string) {
+  return /^(?:Absender|Arbeitgeber(?:bezeichnung|daten)?|Betriebsname|Firma|Betrieb|Betriebsstätte|Institution|Versicherer|Arbeitnehmer(?:name)?|Arbeitnehmer Name|Name des Arbeitnehmers|Beschäftigtenname|Mitarbeitername|AN-Name|Mitarbeiter(?:\/in)?|Beschäftigte(?:r|n)?|Personalien|Versicherte(?:r|n)?|Empfänger(?:\/in)?|Dokumentdatum|Rechnungsdatum|Ausstellungsdatum|Abrechnungsdatum|Datum der Abrechnung|Abrechnungsstichtag|Abrechnung vom|Erstellt am|Datum|Fälligkeitsdatum|Fälligkeit|zahlbar bis|Frist bis|spätestens am|Auszahlungsbetrag|Nettoauszahlung|Überweisungsbetrag|Nettoentgelt|Nettobetrag|Nettoverdienst|Netto[- ]Bezüge|Auszahlung netto)\s*[:\-]?$/i.test(
+    line,
+  );
 }
 
 function suggestion(
@@ -158,7 +167,8 @@ function findLabelValue(lines: string[], labels: string[]) {
       }
       if (
         new RegExp(`^${label}\\s*[:\\-]?$`, 'i').test(line) &&
-        lines[lineIndex + 1]
+        lines[lineIndex + 1] &&
+        !isDocumentLabelLine(lines[lineIndex + 1])
       ) {
         return {
           value: lines[lineIndex + 1],
@@ -172,7 +182,10 @@ function findLabelValue(lines: string[], labels: string[]) {
 
 function cleanEntityValue(value: string) {
   return value
-    .replace(/\b(?:Personalnummer|Pers\.?-?Nr\.?|Steuernummer|Betriebsnummer)\b.*$/i, '')
+    .replace(
+      /\b(?:Arbeitnehmer(?:name)?|Mitarbeiter(?:\/in)?|Personalnummer|Pers\.?-?\s*Nr\.?|Steuernummer|Betriebsnummer|Geburtsdatum|Eintrittsdatum)\b.*$/i,
+      '',
+    )
     .replace(/\s{2,}/g, ' ')
     .replace(/^[,:;\s-]+|[,:;\s-]+$/g, '')
     .trim();
@@ -204,6 +217,18 @@ function findDateByLabel(text: string, labels: string[]) {
   return undefined;
 }
 
+function findPayrollDate(text: string) {
+  return findDateByLabel(text, [
+    'Dokumentdatum',
+    'Ausstellungsdatum',
+    'Abrechnungsdatum',
+    'Datum der Abrechnung',
+    'Abrechnungsstichtag',
+    'Abrechnung vom',
+    'Erstellt am',
+  ]);
+}
+
 function detectRule(text: string) {
   let best: { rule: DocumentRule; score: number; evidence: string } | undefined;
   for (const rule of rules) {
@@ -224,6 +249,8 @@ function findSender(lines: string[]) {
     'Absender',
     'Arbeitgeber',
     'Arbeitgeberbezeichnung',
+    'Arbeitgeberdaten',
+    'Betriebsname',
     'Firma',
     'Betrieb',
     'Betriebsstätte',
@@ -261,6 +288,11 @@ function findPerson(lines: string[], isPayroll: boolean) {
   const labelled = findLabelValue(lines, [
     'Arbeitnehmer(?:\\/in)?',
     'Arbeitnehmername',
+    'Arbeitnehmer Name',
+    'Name des Arbeitnehmers',
+    'Beschäftigtenname',
+    'Mitarbeitername',
+    'AN-Name',
     'Mitarbeiter(?:\\/in)?',
     'Beschäftigte(?:r|n)?',
     'Personalien',
@@ -302,7 +334,6 @@ function findAmount(text: string, lines: string[], documentType?: string) {
     documentType === 'Lohnabrechnung / Gehaltsabrechnung'
       ? [
           'Auszahlungsbetrag',
-          'Auszahlung',
           'Nettoauszahlung',
           'Überweisungsbetrag',
           'Nettoentgelt',
@@ -310,46 +341,63 @@ function findAmount(text: string, lines: string[], documentType?: string) {
           'Nettoverdienst',
           'Netto-Bezüge',
           'Netto Bezüge',
+          'Auszahlung netto',
         ]
       : ['Rechnungsbetrag', 'Gesamtbetrag', 'Zahlbetrag', 'Forderungsbetrag', 'Zu zahlen'];
   for (const label of labels) {
-    const forward = text.match(
-      new RegExp(`\\b${label}\\b[^\\d]{0,35}${amountPattern}`, 'i'),
-    );
-    if (forward?.[1]) {
-      return {
-        value: forward[1].replace(/\s+/g, ' ').trim(),
-        evidence: forward[0],
-      };
-    }
-    const reverse = text.match(
-      new RegExp(`${amountPattern}[^\\p{L}\\d]{0,20}\\b${label}\\b`, 'iu'),
-    );
-    if (reverse?.[1]) {
-      return {
-        value: reverse[1].replace(/\s+/g, ' ').trim(),
-        evidence: reverse[0],
-      };
-    }
-    const labelled = findLabelValue(lines, [label]);
-    const amount = labelled?.value.match(new RegExp(`^${amountPattern}`, 'i'));
-    if (amount?.[1]) {
-      return {
-        value: amount[1].replace(/\s+/g, ' ').trim(),
-        evidence: labelled?.evidence ?? amount[0],
-      };
+    for (const [lineIndex, line] of lines.entries()) {
+      const forward = line.match(
+        new RegExp(`\\b${label}\\b[^\\d]{0,28}${amountPattern}`, 'i'),
+      );
+      if (forward?.[1]) {
+        return {
+          value: forward[1].replace(/\s+/g, ' ').trim(),
+          evidence: forward[0],
+        };
+      }
+      const reverse = line.match(
+        new RegExp(`${amountPattern}[^\\p{L}\\d]{0,16}\\b${label}\\b`, 'iu'),
+      );
+      if (reverse?.[1]) {
+        return {
+          value: reverse[1].replace(/\s+/g, ' ').trim(),
+          evidence: reverse[0],
+        };
+      }
+      if (
+        new RegExp(`^${label}\\s*[:\\-]?$`, 'i').test(line) &&
+        lines[lineIndex + 1] &&
+        !isDocumentLabelLine(lines[lineIndex + 1])
+      ) {
+        const amount = lines[lineIndex + 1].match(
+          new RegExp(`^\\s*${amountPattern}`, 'i'),
+        );
+        if (amount?.[1]) {
+          return {
+            value: amount[1].replace(/\s+/g, ' ').trim(),
+            evidence: `${line} ${lines[lineIndex + 1]}`,
+          };
+        }
+      }
     }
   }
   return undefined;
 }
 
 function findPayrollPeriod(text: string) {
-  const match = text.match(
+  const periodPattern = `((?:${monthNames})\\s+\\d{4}|(?:0?[1-9]|1[0-2])[.\\-/]\\d{4})`;
+  const patterns = [
     new RegExp(
-      `\\b(?:Abrechnungsmonat|Abrechnungszeitraum|Abrechnungsperiode|Entgeltabrechnung\\s+für|Abrechnung\\s+für|für)\\b\\s*[:\\-]?\\s*((?:${monthNames})\\s+\\d{4}|(?:0?[1-9]|1[0-2])[.\\-/]\\d{4})`,
+      `\\b(?:Abrechnungsmonat|Abrechnungszeitraum|Abrechnungsperiode|Entgeltabrechnung|Abrechnung)\\b\\s*(?:für\\s+(?:den\\s+)?Monat\\s+|für\\s+|im\\s+Monat\\s+|[:\\-]?\\s*)${periodPattern}`,
       'i',
     ),
-  );
+    new RegExp(
+      `\\bfür\\s+(?:den\\s+)?Monat\\s+${periodPattern}`,
+      'i',
+    ),
+    new RegExp(`\\bMonat\\b\\s*[:\\-]?\\s*${periodPattern}`, 'i'),
+  ];
+  const match = patterns.map((pattern) => text.match(pattern)).find(Boolean);
   return match?.[1]?.replace(/\bMaerz\b/i, 'März');
 }
 
@@ -380,6 +428,7 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
   const lines = normalizeLines(text);
   const detected = detectRule(text);
   const documentType = detected?.rule.documentType;
+  const isPayroll = documentType === 'Lohnabrechnung / Gehaltsabrechnung';
 
   if (detected) {
     const confidence: AnalysisConfidence = detected.score >= 2 ? 'high' : 'medium';
@@ -397,13 +446,14 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
   const sender = findSender(lines);
   if (sender) fields.sender = suggestion(sender.value, sender.confidence, sender.evidence);
 
-  const documentDate = findDateByLabel(text, [
-    'Dokumentdatum',
-    'Rechnungsdatum',
-    'Ausstellungsdatum',
-    'Abrechnungsdatum',
-    'Datum',
-  ]);
+  const documentDate = isPayroll
+    ? findPayrollDate(text)
+    : findDateByLabel(text, [
+        'Dokumentdatum',
+        'Rechnungsdatum',
+        'Ausstellungsdatum',
+        'Datum',
+      ]);
   if (documentDate) {
     fields.documentDate = suggestion(documentDate.value, 'high', documentDate.evidence);
   }
@@ -420,7 +470,6 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
   const amount = findAmount(text, lines, documentType);
   if (amount) fields.amount = suggestion(amount.value, 'high', amount.evidence);
 
-  const isPayroll = documentType === 'Lohnabrechnung / Gehaltsabrechnung';
   const person = findPerson(lines, isPayroll);
   if (person) {
     fields.person = suggestion(person.value, person.confidence, person.evidence);
@@ -430,6 +479,9 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
     isPayroll
       ? findPayrollPeriod(text)
       : undefined;
+  if (payrollPeriod) {
+    fields.payrollPeriod = suggestion(payrollPeriod, 'high', payrollPeriod);
+  }
   if (isPayroll && payrollPeriod) {
     const title = fields.sender?.value
       ? `Lohnabrechnung ${payrollPeriod} – ${fields.sender.value}`

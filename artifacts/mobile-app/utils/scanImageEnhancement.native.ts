@@ -117,27 +117,36 @@ async function processEnhancedScanPage(
     const gridHeight = Math.max(12, Math.round((height / width) * gridWidth));
     const gridSum = new Float64Array(gridWidth * gridHeight);
     const gridCount = new Uint32Array(gridWidth * gridHeight);
+    const gridMax = new Uint8Array(gridWidth * gridHeight);
     for (let y = 0; y < height; y += 3) {
       const gridY = Math.min(gridHeight - 1, Math.floor((y / height) * gridHeight));
       for (let x = 0; x < width; x += 3) {
         const pixel = y * width + x;
         const value = luminance[pixel];
-        if (value < 125) continue;
         const gridX = Math.min(gridWidth - 1, Math.floor((x / width) * gridWidth));
         const index = gridY * gridWidth + gridX;
-        gridSum[index] += value;
-        gridCount[index] += 1;
+        gridMax[index] = Math.max(gridMax[index], value);
+        if (value >= 155) {
+          gridSum[index] += value;
+          gridCount[index] += 1;
+        }
       }
     }
 
     const gridBackground = new Float32Array(gridWidth * gridHeight);
     for (let index = 0; index < gridBackground.length; index += 1) {
       gridBackground[index] =
-        gridCount[index] > 0 ? gridSum[index] / gridCount[index] : 225;
+        gridCount[index] > 0
+          ? Math.max(gridMax[index] * 0.92, gridSum[index] / gridCount[index])
+          : gridMax[index] >= 100
+            ? gridMax[index]
+            : 225;
     }
 
     let totalLuminanceChange = 0;
     let newlyClippedHighlights = 0;
+    let sourceInkPixels = 0;
+    let retainedInkPixels = 0;
     for (let y = 0; y < height; y += 1) {
       const gridPositionY = (y / Math.max(1, height - 1)) * (gridHeight - 1);
       const gridY0 = Math.floor(gridPositionY);
@@ -159,24 +168,18 @@ async function processEnhancedScanPage(
           gridBackground[gridY1 * gridWidth + gridX1] * mixX;
         const background =
           backgroundTop * (1 - mixY) + backgroundBottom * mixY;
-        const paperInfluence = Math.pow(originalY / 255, 1.35);
-        const backgroundCorrection = clamp(
-          (244 - background) * paperInfluence,
-          -8,
-          44,
-        );
+        const inkDistance = Math.max(0, background - originalY);
         let targetY =
-          255 *
-          Math.pow(
-            clamp(originalY + backgroundCorrection) / 255,
-            0.94,
-          );
+          originalY >= background
+            ? 248 + Math.min(5, (originalY - background) * 0.12)
+            : 248 - inkDistance * 1.42;
+        if (inkDistance >= 24) sourceInkPixels += 1;
+        if (targetY <= 218) retainedInkPixels += 1;
 
-        if (targetY > 176) {
-          const paperWeight = Math.pow((targetY - 176) / 79, 1.25);
-          targetY += paperWeight * 13;
-        } else if (targetY < 168) {
-          targetY -= (168 - targetY) * 0.08;
+        if (targetY > 205) {
+          targetY = 244 + (targetY - 205) * 0.22;
+        } else if (targetY < 180) {
+          targetY -= (180 - targetY) * 0.12;
         }
 
         if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
@@ -200,7 +203,7 @@ async function processEnhancedScanPage(
         const correctedR = clamp(data[offset] * ratio);
         const correctedG = clamp(data[offset + 1] * ratio);
         const correctedB = clamp(data[offset + 2] * ratio);
-        const grayscaleMix = 0.58;
+        const grayscaleMix = 0.88;
         data[offset] = clamp(
           correctedR * (1 - grayscaleMix) + targetY * grayscaleMix,
         );
@@ -216,8 +219,14 @@ async function processEnhancedScanPage(
 
     const averageLuminanceChange = totalLuminanceChange / pixelCount;
     const newlyClippedRatio = newlyClippedHighlights / pixelCount;
+    const retainedInkRatio =
+      sourceInkPixels > 0 ? retainedInkPixels / sourceInkPixels : 1;
     if (destination.exists) destination.delete();
-    if (averageLuminanceChange > 52 || newlyClippedRatio > 0.3) {
+    if (
+      averageLuminanceChange > 88 ||
+      newlyClippedRatio > 0.72 ||
+      retainedInkRatio < 0.72
+    ) {
       await copyAsync({ from: prepared.uri, to: destinationUri });
       return { mode: 'original', width, height };
     }
