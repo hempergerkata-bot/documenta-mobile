@@ -1,4 +1,5 @@
 import type { ResponseType } from 'react-native-document-scanner-plugin';
+import { MAX_SCAN_PAGES } from '@/utils/scanLimits';
 
 export type NativeScanResult =
   | { status: 'success'; scannedImages: string[] }
@@ -11,7 +12,7 @@ export async function scanDocumentPages(): Promise<NativeScanResult> {
   );
   const result = await DocumentScanner.scanDocument({
     croppedImageQuality: 100,
-    maxNumDocuments: 50,
+    maxNumDocuments: MAX_SCAN_PAGES,
     responseType: 'imageFilePath' as ResponseType,
   });
 

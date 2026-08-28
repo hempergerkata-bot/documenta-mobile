@@ -42,8 +42,8 @@ async function processEnhancedScanPage(
 
   const destination = new File(destinationUri);
   const sourceSize = await getImageSize(sourceUri);
-  const maxPixels = 5_000_000;
-  const maxWidth = 2000;
+  const maxPixels = 8_700_000;
+  const maxWidth = 2480;
   const scale = Math.min(
     1,
     maxWidth / sourceSize.width,
@@ -70,8 +70,8 @@ async function processEnhancedScanPage(
       useTArray: true,
       formatAsRGBA: true,
       tolerantDecoding: true,
-      maxResolutionInMP: 6,
-      maxMemoryUsageInMB: 192,
+      maxResolutionInMP: 9,
+      maxMemoryUsageInMB: 256,
     });
     const { width, height, data } = decoded;
     const pixelCount = width * height;
@@ -159,12 +159,24 @@ async function processEnhancedScanPage(
           gridBackground[gridY1 * gridWidth + gridX1] * mixX;
         const background =
           backgroundTop * (1 - mixY) + backgroundBottom * mixY;
-        const shadowLift = clamp((236 - background) * Math.pow(originalY / 255, 1.7), 0, 24);
-        let targetY = 255 * Math.pow(clamp(originalY + shadowLift) / 255, 0.96);
+        const paperInfluence = Math.pow(originalY / 255, 1.35);
+        const backgroundCorrection = clamp(
+          (244 - background) * paperInfluence,
+          -8,
+          44,
+        );
+        let targetY =
+          255 *
+          Math.pow(
+            clamp(originalY + backgroundCorrection) / 255,
+            0.94,
+          );
 
-        if (targetY > 184) {
-          const paperWeight = Math.pow((targetY - 184) / 71, 1.4);
-          targetY += paperWeight * 7;
+        if (targetY > 176) {
+          const paperWeight = Math.pow((targetY - 176) / 79, 1.25);
+          targetY += paperWeight * 13;
+        } else if (targetY < 168) {
+          targetY -= (168 - targetY) * 0.08;
         }
 
         if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
@@ -176,18 +188,28 @@ async function processEnhancedScanPage(
             4;
           const edge = Math.abs(originalY - neighbourAverage);
           targetY =
-            edge < 8
-              ? targetY * 0.82 + neighbourAverage * 0.18
-              : targetY + (originalY - neighbourAverage) * 0.1;
+            edge < 7
+              ? targetY * 0.88 + neighbourAverage * 0.12
+              : targetY + (originalY - neighbourAverage) * 0.15;
         }
 
-        targetY = clamp(targetY, 3, 250);
+        targetY = clamp(targetY, 2, 253);
         totalLuminanceChange += Math.abs(targetY - originalY);
-        if (targetY >= 249 && originalY < 242) newlyClippedHighlights += 1;
+        if (targetY >= 252 && originalY < 238) newlyClippedHighlights += 1;
         const ratio = targetY / Math.max(3, originalY);
-        data[offset] = clamp(data[offset] * ratio);
-        data[offset + 1] = clamp(data[offset + 1] * ratio);
-        data[offset + 2] = clamp(data[offset + 2] * ratio);
+        const correctedR = clamp(data[offset] * ratio);
+        const correctedG = clamp(data[offset + 1] * ratio);
+        const correctedB = clamp(data[offset + 2] * ratio);
+        const grayscaleMix = 0.58;
+        data[offset] = clamp(
+          correctedR * (1 - grayscaleMix) + targetY * grayscaleMix,
+        );
+        data[offset + 1] = clamp(
+          correctedG * (1 - grayscaleMix) + targetY * grayscaleMix,
+        );
+        data[offset + 2] = clamp(
+          correctedB * (1 - grayscaleMix) + targetY * grayscaleMix,
+        );
         data[offset + 3] = 255;
       }
     }
@@ -195,12 +217,12 @@ async function processEnhancedScanPage(
     const averageLuminanceChange = totalLuminanceChange / pixelCount;
     const newlyClippedRatio = newlyClippedHighlights / pixelCount;
     if (destination.exists) destination.delete();
-    if (averageLuminanceChange > 24 || newlyClippedRatio > 0.12) {
+    if (averageLuminanceChange > 52 || newlyClippedRatio > 0.3) {
       await copyAsync({ from: prepared.uri, to: destinationUri });
       return { mode: 'original', width, height };
     }
 
-    const encoded = encode({ width, height, data }, 94);
+    const encoded = encode({ width, height, data }, 95);
     destination.write(encoded.data);
     return { mode: 'enhanced', width, height };
   } finally {

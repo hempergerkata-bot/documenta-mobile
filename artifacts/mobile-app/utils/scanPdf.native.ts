@@ -2,6 +2,10 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { copyAsync } from 'expo-file-system/legacy';
 import { PDFDocument } from 'pdf-lib/cjs/index.js';
 import { enhanceScanPage } from '@/utils/scanImageEnhancement';
+import {
+  MAX_ENHANCED_IMAGE_BYTES,
+  MAX_SCAN_PAGES,
+} from '@/utils/scanLimits';
 
 function normalizeFileUri(uri: string) {
   if (uri.startsWith('file://') || uri.startsWith('content://')) return uri;
@@ -19,6 +23,11 @@ export async function createPersistentScannedDocument(
   if (pageUris.length === 0) {
     throw new Error('Es wurde keine gescannte Seite gefunden.');
   }
+  if (pageUris.length > MAX_SCAN_PAGES) {
+    throw new Error(
+      `Ein Dokument darf höchstens ${MAX_SCAN_PAGES} hochauflösende Seiten enthalten. Bitte teile den Scan in mehrere Dokumente auf.`,
+    );
+  }
 
   const directory = new Directory(Paths.document, 'documenta');
   directory.create({ intermediates: true, idempotent: true });
@@ -29,6 +38,7 @@ export async function createPersistentScannedDocument(
   const temporarySourceFiles: File[] = [];
   const pdfFile = new File(directory, `${documentId}.pdf`);
   const pdf = await PDFDocument.create();
+  let enhancedImageBytes = 0;
   pdf.setTitle('Documenta Scan');
   pdf.setCreator('Documenta');
 
@@ -56,6 +66,12 @@ export async function createPersistentScannedDocument(
       }
 
       const bytes = await pageFile.bytes();
+      enhancedImageBytes += bytes.length;
+      if (enhancedImageBytes > MAX_ENHANCED_IMAGE_BYTES) {
+        throw new Error(
+          'Die optimierten Seiten sind für eine zuverlässige PDF-Erstellung zu groß. Bitte teile den Scan in mehrere Dokumente auf.',
+        );
+      }
       const image = await pdf.embedJpg(bytes);
       const pageWidth = 595;
       const pageHeight = 842;

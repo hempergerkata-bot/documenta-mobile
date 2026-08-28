@@ -18,6 +18,7 @@ import { useColors } from '@/hooks/useColors';
 import { scanDocumentPages } from '@/utils/documentScanner';
 import { createPersistentScannedDocument, deleteTemporaryScanPages } from '@/utils/scanPdf';
 import { recognizeAndAnalyzeDocument } from '@/utils/documentOcr';
+import { MAX_SCAN_PAGES } from '@/utils/scanLimits';
 
 export default function ScanReviewScreen() {
   const colors = useColors();
@@ -37,6 +38,17 @@ export default function ScanReviewScreen() {
     try {
       const result = await scanDocumentPages();
       if (result.status !== 'success' || result.scannedImages.length === 0) return;
+      const nextPageCount =
+        replaceIndex === undefined
+          ? pages.length + result.scannedImages.length
+          : pages.length - 1 + result.scannedImages.length;
+      if (nextPageCount > MAX_SCAN_PAGES) {
+        deleteTemporaryScanPages(result.scannedImages);
+        setError(
+          `Maximal ${MAX_SCAN_PAGES} hochauflösende Seiten pro Dokument. Bitte speichere den aktuellen Scan und beginne danach ein neues Dokument.`,
+        );
+        return;
+      }
       if (replaceIndex === undefined) {
         setPages((current) => [...current, ...result.scannedImages]);
         setSelectedPage(pages.length);
@@ -81,7 +93,10 @@ export default function ScanReviewScreen() {
       let analysis;
       let ocrStatus: 'complete' | 'empty' | 'failed' = 'failed';
       try {
-        analysis = await recognizeAndAnalyzeDocument(result.pageUris);
+        analysis = await recognizeAndAnalyzeDocument(
+          result.pageUris,
+          result.originalPageUris,
+        );
         ocrStatus = analysis.text ? 'complete' : 'empty';
       } catch {
         ocrStatus = 'failed';
@@ -153,7 +168,7 @@ export default function ScanReviewScreen() {
           <Image source={{ uri: pages[selectedPage] }} style={styles.previewImage} resizeMode="contain" testID="scan-page-preview" />
           <View style={[styles.enhancedBadge, { backgroundColor: colors.navy }]}>
             <Feather name="check-circle" size={13} color={colors.white} />
-            <Text style={[styles.enhancedText, { color: colors.white }]}>Kanten · Zuschnitt · Perspektive bestätigt</Text>
+            <Text style={[styles.enhancedText, { color: colors.white }]}>Kanten · Zuschnitt · Perspektive vom Scanner verarbeitet</Text>
           </View>
         </View>
 
@@ -188,7 +203,7 @@ export default function ScanReviewScreen() {
           <Feather name="maximize" size={17} color={colors.sageDeep} />
           <View style={styles.qualityCopy}>
             <Text style={[styles.qualityTitle, { color: colors.sageDeep }]}>Echter nativer Dokumentenscan</Text>
-            <Text style={[styles.qualityText, { color: colors.sageDeep }]}>Der native Scanner erkennt alle vier Papierkanten, schneidet den Hintergrund weg und entzerrt die Perspektive. Die vier Ecken werden bereits in der nativen Scan-Vorschau vor der Übernahme manuell korrigiert.</Text>
+            <Text style={[styles.qualityText, { color: colors.sageDeep }]}>Der native Scanner erkennt alle vier Papierkanten, schneidet den Hintergrund weg und entzerrt die Perspektive. Bis zu {MAX_SCAN_PAGES} Seiten werden anschließend einzeln für eine helle, kontrastreiche PDF optimiert.</Text>
           </View>
         </View>
 

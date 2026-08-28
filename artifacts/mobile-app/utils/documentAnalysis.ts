@@ -23,6 +23,7 @@ export type DocumentAnalysisResult = {
   text: string;
   fields: Partial<Record<DocumentAnalysisField, SuggestedValue<string | string[]>>>;
   uncertainFields: DocumentAnalysisField[];
+  unresolvedFields: DocumentAnalysisField[];
 };
 
 type DocumentRule = {
@@ -119,7 +120,19 @@ const rules: DocumentRule[] = [
 const monthNames =
   'Januar|Februar|März|Maerz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember';
 const dateValuePattern = `(?:\\d{1,2}[.\\-/]\\d{1,2}[.\\-/]\\d{2,4}|\\d{1,2}\\.\\s*(?:${monthNames})\\s+\\d{4})`;
-const amountPattern = '(\\d{1,3}(?:[.\\s]\\d{3})*(?:,\\d{2})\\s*(?:€|EUR))';
+const amountPattern = '(\\d{1,3}(?:[.\\s]\\d{3})*,\\d{2}\\s*(?:€|EUR)?)';
+const requestedFields: DocumentAnalysisField[] = [
+  'title',
+  'sender',
+  'category',
+  'subcategory',
+  'documentType',
+  'documentDate',
+  'dueDate',
+  'amount',
+  'person',
+  'tags',
+];
 
 function normalizeLines(text: string) {
   return text
@@ -137,13 +150,39 @@ function suggestion(
 }
 
 function findLabelValue(lines: string[], labels: string[]) {
-  for (const line of lines) {
+  for (const [lineIndex, line] of lines.entries()) {
     for (const label of labels) {
       const match = line.match(new RegExp(`\\b${label}\\b\\s*[:\\-]?\\s*(.+)$`, 'i'));
-      if (match?.[1]?.trim()) return { value: match[1].trim(), evidence: line };
+      if (match?.[1]?.trim()) {
+        return { value: match[1].trim(), evidence: line };
+      }
+      if (
+        new RegExp(`^${label}\\s*[:\\-]?$`, 'i').test(line) &&
+        lines[lineIndex + 1]
+      ) {
+        return {
+          value: lines[lineIndex + 1],
+          evidence: `${line} ${lines[lineIndex + 1]}`,
+        };
+      }
     }
   }
   return undefined;
+}
+
+function cleanEntityValue(value: string) {
+  return value
+    .replace(/\b(?:Personalnummer|Pers\.?-?Nr\.?|Steuernummer|Betriebsnummer)\b.*$/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[,:;\s-]+|[,:;\s-]+$/g, '')
+    .trim();
+}
+
+function extractLegalEntity(line: string) {
+  const match = line.match(
+    /([\p{L}\d][\p{L}\d&.,'()\/\s-]{1,90}?\b(?:GmbH(?:\s*&\s*Co\.?\s*KG)?|UG(?:\s*\(haftungsbeschränkt\))?|AG|KG|OHG|e\.?\s*V\.?|Krankenkasse|Versicherung|Finanzamt|Stadtwerke))\b/iu,
+  );
+  return match?.[1] ? cleanEntityValue(match[1]) : undefined;
 }
 
 function normalizeDate(value: string) {
@@ -184,50 +223,122 @@ function findSender(lines: string[]) {
   const labelled = findLabelValue(lines, [
     'Absender',
     'Arbeitgeber',
+    'Arbeitgeberbezeichnung',
     'Firma',
+    'Betrieb',
+    'Betriebsstätte',
     'Institution',
     'Versicherer',
   ]);
-  if (labelled && labelled.value.length >= 3 && labelled.value.length <= 100) {
-    return { ...labelled, confidence: 'high' as const };
+  const labelledValue = labelled ? cleanEntityValue(labelled.value) : '';
+  if (labelled && labelledValue.length >= 3 && labelledValue.length <= 100) {
+    return {
+      value: labelledValue,
+      evidence: labelled.evidence,
+      confidence: 'high' as const,
+    };
   }
 
-  const legalEntity = lines
+  const legalEntityLine = lines
     .slice(0, 15)
     .find((line) =>
       /\b(?:GmbH(?:\s*&\s*Co\.?\s*KG)?|AG|e\.?\s*V\.?|Krankenkasse|Versicherung|Finanzamt|Stadtwerke)\b/i.test(
         line,
       ),
     );
+  const legalEntity = legalEntityLine ? extractLegalEntity(legalEntityLine) : undefined;
   if (legalEntity && legalEntity.length <= 100) {
-    return { value: legalEntity, evidence: legalEntity, confidence: 'medium' as const };
+    return {
+      value: legalEntity,
+      evidence: legalEntityLine ?? legalEntity,
+      confidence: 'medium' as const,
+    };
   }
   return undefined;
 }
 
-function findPerson(lines: string[]) {
+function findPerson(lines: string[], isPayroll: boolean) {
   const labelled = findLabelValue(lines, [
     'Arbeitnehmer(?:\\/in)?',
+    'Arbeitnehmername',
     'Mitarbeiter(?:\\/in)?',
+    'Beschäftigte(?:r|n)?',
+    'Personalien',
     'Versicherte(?:r|n)?',
     'Empfänger(?:\\/in)?',
   ]);
-  if (!labelled) return undefined;
-  const name = labelled.value
-    .replace(/\b(?:Personalnummer|Versichertennummer|Geburtsdatum)\b.*$/i, '')
-    .trim();
-  if (!/^[\p{L}][\p{L}\s.'-]{2,80}$/u.test(name)) return undefined;
-  return { value: name, evidence: labelled.evidence };
+  if (labelled) {
+    const name = cleanEntityValue(
+      labelled.value.replace(
+        /\b(?:Personalnummer|Versichertennummer|Geburtsdatum|Eintrittsdatum)\b.*$/i,
+        '',
+      ),
+    );
+    if (/^[\p{L}][\p{L}\s.'-]{2,80}$/u.test(name)) {
+      return { value: name, evidence: labelled.evidence, confidence: 'high' as const };
+    }
+  }
+
+  if (!isPayroll) return undefined;
+  for (let index = 0; index < Math.min(lines.length - 1, 35); index += 1) {
+    const candidate = lines[index];
+    const nextLine = lines[index + 1];
+    if (
+      /^[\p{Lu}][\p{L}.'-]+(?:\s+[\p{Lu}][\p{L}.'-]+){1,3}$/u.test(candidate) &&
+      /^(?:\p{L}[\p{L}\s.-]*\s+)?\d{4,5}\s+\p{L}/u.test(nextLine)
+    ) {
+      return {
+        value: candidate,
+        evidence: `${candidate} ${nextLine}`,
+        confidence: 'medium' as const,
+      };
+    }
+  }
+  return undefined;
 }
 
-function findAmount(text: string, documentType?: string) {
+function findAmount(text: string, lines: string[], documentType?: string) {
   const labels =
     documentType === 'Lohnabrechnung / Gehaltsabrechnung'
-      ? ['Auszahlungsbetrag', 'Nettoauszahlung', 'Überweisungsbetrag', 'Nettoentgelt']
+      ? [
+          'Auszahlungsbetrag',
+          'Auszahlung',
+          'Nettoauszahlung',
+          'Überweisungsbetrag',
+          'Nettoentgelt',
+          'Nettobetrag',
+          'Nettoverdienst',
+          'Netto-Bezüge',
+          'Netto Bezüge',
+        ]
       : ['Rechnungsbetrag', 'Gesamtbetrag', 'Zahlbetrag', 'Forderungsbetrag', 'Zu zahlen'];
   for (const label of labels) {
-    const match = text.match(new RegExp(`\\b${label}\\b[^\\d]{0,20}${amountPattern}`, 'i'));
-    if (match?.[1]) return { value: match[1].replace(/\s+/g, ' '), evidence: match[0] };
+    const forward = text.match(
+      new RegExp(`\\b${label}\\b[^\\d]{0,35}${amountPattern}`, 'i'),
+    );
+    if (forward?.[1]) {
+      return {
+        value: forward[1].replace(/\s+/g, ' ').trim(),
+        evidence: forward[0],
+      };
+    }
+    const reverse = text.match(
+      new RegExp(`${amountPattern}[^\\p{L}\\d]{0,20}\\b${label}\\b`, 'iu'),
+    );
+    if (reverse?.[1]) {
+      return {
+        value: reverse[1].replace(/\s+/g, ' ').trim(),
+        evidence: reverse[0],
+      };
+    }
+    const labelled = findLabelValue(lines, [label]);
+    const amount = labelled?.value.match(new RegExp(`^${amountPattern}`, 'i'));
+    if (amount?.[1]) {
+      return {
+        value: amount[1].replace(/\s+/g, ' ').trim(),
+        evidence: labelled?.evidence ?? amount[0],
+      };
+    }
   }
   return undefined;
 }
@@ -235,17 +346,36 @@ function findAmount(text: string, documentType?: string) {
 function findPayrollPeriod(text: string) {
   const match = text.match(
     new RegExp(
-      `\\b(?:Abrechnungsmonat|Abrechnungszeitraum|für)\\b\\s*[:\\-]?\\s*((?:${monthNames})\\s+\\d{4})`,
+      `\\b(?:Abrechnungsmonat|Abrechnungszeitraum|Abrechnungsperiode|Entgeltabrechnung\\s+für|Abrechnung\\s+für|für)\\b\\s*[:\\-]?\\s*((?:${monthNames})\\s+\\d{4}|(?:0?[1-9]|1[0-2])[.\\-/]\\d{4})`,
       'i',
     ),
   );
   return match?.[1]?.replace(/\bMaerz\b/i, 'März');
 }
 
+function uniqueTags(values: Array<string | undefined>) {
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value?.replace(/\s+/g, ' ').trim();
+    if (!normalized) continue;
+    if (!result.some((existing) => existing.toLocaleLowerCase('de') === normalized.toLocaleLowerCase('de'))) {
+      result.push(normalized);
+    }
+  }
+  return result;
+}
+
 export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResult {
   const text = rawText.replace(/\u0000/g, '').trim();
   const fields: DocumentAnalysisResult['fields'] = {};
-  if (!text) return { text: '', fields, uncertainFields: [] };
+  if (!text) {
+    return {
+      text: '',
+      fields,
+      uncertainFields: [],
+      unresolvedFields: requestedFields,
+    };
+  }
 
   const lines = normalizeLines(text);
   const detected = detectRule(text);
@@ -262,7 +392,6 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
     if (detected.rule.subcategory) {
       fields.subcategory = suggestion(detected.rule.subcategory, confidence, detected.evidence);
     }
-    fields.tags = suggestion(detected.rule.tags, confidence, detected.evidence);
   }
 
   const sender = findSender(lines);
@@ -288,26 +417,50 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
   ]);
   if (dueDate) fields.dueDate = suggestion(dueDate.value, 'high', dueDate.evidence);
 
-  const amount = findAmount(text, documentType);
+  const amount = findAmount(text, lines, documentType);
   if (amount) fields.amount = suggestion(amount.value, 'high', amount.evidence);
 
-  const person = findPerson(lines);
-  if (person) fields.person = suggestion(person.value, 'high', person.evidence);
+  const isPayroll = documentType === 'Lohnabrechnung / Gehaltsabrechnung';
+  const person = findPerson(lines, isPayroll);
+  if (person) {
+    fields.person = suggestion(person.value, person.confidence, person.evidence);
+  }
 
   const payrollPeriod =
-    documentType === 'Lohnabrechnung / Gehaltsabrechnung'
+    isPayroll
       ? findPayrollPeriod(text)
       : undefined;
-  if (documentType === 'Lohnabrechnung / Gehaltsabrechnung' && payrollPeriod) {
+  if (isPayroll && payrollPeriod) {
     const title = fields.sender?.value
       ? `Lohnabrechnung ${payrollPeriod} – ${fields.sender.value}`
       : `Lohnabrechnung ${payrollPeriod}`;
     fields.title = suggestion(title, fields.sender ? 'high' : 'medium', payrollPeriod);
+  } else if (isPayroll && fields.sender?.value) {
+    fields.title = suggestion(
+      `Lohnabrechnung – ${fields.sender.value}`,
+      'medium',
+      `${documentType}; ${fields.sender.evidence}`,
+    );
   } else if (documentType && fields.sender?.value) {
     fields.title = suggestion(
       `${documentType} – ${fields.sender.value}`,
       'medium',
       `${documentType}; ${fields.sender.evidence}`,
+    );
+  }
+
+  if (detected) {
+    const senderTag =
+      typeof fields.sender?.value === 'string' ? fields.sender.value : undefined;
+    const tags = uniqueTags([
+      ...detected.rule.tags,
+      senderTag,
+      isPayroll ? payrollPeriod : undefined,
+    ]);
+    fields.tags = suggestion(
+      tags,
+      detected.score >= 2 ? 'high' : 'medium',
+      [detected.evidence, senderTag, payrollPeriod].filter(Boolean).join('; '),
     );
   }
 
@@ -318,5 +471,7 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
     .filter(([, value]) => value.confidence === 'medium')
     .map(([field]) => field);
 
-  return { text, fields, uncertainFields };
+  const unresolvedFields = requestedFields.filter((field) => !fields[field]);
+
+  return { text, fields, uncertainFields, unresolvedFields };
 }

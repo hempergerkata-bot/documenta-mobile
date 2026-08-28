@@ -60,6 +60,7 @@ export default function DocumentDetailsScreen() {
   const analysisAppliedRef = useRef(false);
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
   const uncertainFields = new Set(pendingAsset?.analysis?.uncertainFields ?? []);
+  const unresolvedFields = new Set(pendingAsset?.analysis?.unresolvedFields ?? []);
   const canSave =
     !!title.trim() &&
     !!category &&
@@ -106,10 +107,14 @@ export default function DocumentDetailsScreen() {
     if (Array.isArray(suggestedTags)) setTags(suggestedTags.join(', '));
   }, [pendingAsset]);
 
-  const uncertaintyHint = (field: DocumentAnalysisField) =>
+  const analysisHint = (field: DocumentAnalysisField) =>
     uncertainFields.has(field) ? (
       <Text style={[styles.uncertainHint, { color: colors.coral }]}>
         Automatisch erkannt · unsicher – bitte prüfen
+      </Text>
+    ) : unresolvedFields.has(field) && pendingAsset?.ocrStatus === 'complete' ? (
+      <Text style={[styles.unresolvedHint, { color: colors.mutedForeground }]}>
+        Im OCR-Text nicht eindeutig gefunden – bitte manuell ergänzen
       </Text>
     ) : null;
 
@@ -252,14 +257,14 @@ export default function DocumentDetailsScreen() {
 
         <Text style={[styles.label, { color: colors.navy }]}>Titel</Text>
         <TextInput value={title} onChangeText={setTitle} placeholder="z. B. AOK PLUS – Versicherungsstatus Hochschule" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} testID="details-title-input" />
-        {uncertaintyHint('title')}
+        {analysisHint('title')}
         <Text style={[styles.titleHint, { color: colors.mutedForeground }]}>
           Trage nur einen Titel ein, der eindeutig aus dem Dokument hervorgeht. Du kannst ihn vor dem Speichern jederzeit bearbeiten.
         </Text>
 
         <Text style={[styles.label, { color: colors.navy }]}>Absender / Institution</Text>
         <TextInput value={sender} onChangeText={setSender} placeholder="z. B. Allianz Versicherung" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} testID="details-sender-input" />
-        {uncertaintyHint('sender')}
+        {analysisHint('sender')}
 
         <Text style={[styles.label, { color: colors.navy }]}>Kategorie</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipList}>
@@ -269,11 +274,11 @@ export default function DocumentDetailsScreen() {
             </Pressable>
           ))}
         </ScrollView>
-        {uncertaintyHint('category')}
+        {analysisHint('category')}
 
         <Text style={[styles.label, { color: colors.navy }]}>Unterkategorie</Text>
         <TextInput value={subcategory} onChangeText={setSubcategory} placeholder="z. B. Haftpflicht" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} />
-        {uncertaintyHint('subcategory')}
+        {analysisHint('subcategory')}
 
         <Text style={[styles.label, { color: colors.navy }]}>Dokumenttyp</Text>
         <View style={styles.wrap}>
@@ -283,24 +288,24 @@ export default function DocumentDetailsScreen() {
             </Pressable>
           ))}
         </View>
-        {uncertaintyHint('documentType')}
+        {analysisHint('documentType')}
 
         <View style={styles.twoColumn}>
           <View style={styles.column}>
             <Text style={[styles.label, { color: colors.navy }]}>Dokumentdatum</Text>
             <TextInput value={documentDate} onChangeText={setDocumentDate} placeholder="TT.MM.JJJJ" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} keyboardType="numbers-and-punctuation" />
-            {uncertaintyHint('documentDate')}
+            {analysisHint('documentDate')}
           </View>
           <View style={styles.column}>
             <Text style={[styles.label, { color: colors.navy }]}>Frist / Fälligkeitsdatum</Text>
             <TextInput value={dueDate} onChangeText={setDueDate} placeholder="TT.MM.JJJJ" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} keyboardType="numbers-and-punctuation" />
-            {uncertaintyHint('dueDate')}
+            {analysisHint('dueDate')}
           </View>
         </View>
 
         <Text style={[styles.label, { color: colors.navy }]}>Betrag <Text style={{ color: colors.mutedForeground, fontFamily: 'Inter_400Regular' }}>(optional)</Text></Text>
         <TextInput value={amount} onChangeText={setAmount} placeholder="z. B. 128,40 €" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} keyboardType="decimal-pad" />
-        {uncertaintyHint('amount')}
+        {analysisHint('amount')}
 
         <Text style={[styles.label, { color: colors.navy }]}>Zugehörige Person</Text>
         <TextInput
@@ -318,7 +323,7 @@ export default function DocumentDetailsScreen() {
           ]}
           testID="details-person-input"
         />
-        {uncertaintyHint('person')}
+        {analysisHint('person')}
         <View style={styles.wrap}>
           {people.map((item) => (
             <Pressable key={item} onPress={() => setPerson(item)} style={[styles.chip, { backgroundColor: person === item ? colors.sageDeep : colors.card, borderColor: person === item ? colors.sageDeep : colors.border }]}>
@@ -335,11 +340,11 @@ export default function DocumentDetailsScreen() {
             </Pressable>
           ))}
         </View>
-        {uncertaintyHint('status')}
+        {analysisHint('status')}
 
         <Text style={[styles.label, { color: colors.navy }]}>Tags</Text>
         <TextInput value={tags} onChangeText={setTags} placeholder="z. B. wichtig, 2025, versicherung" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} />
-        {uncertaintyHint('tags')}
+        {analysisHint('tags')}
 
         <Text style={[styles.label, { color: colors.navy }]}>Notiz</Text>
         <TextInput value={note} onChangeText={setNote} placeholder="Eigene Notiz hinzufügen" placeholderTextColor={colors.mutedForeground} multiline textAlignVertical="top" style={[styles.noteInput, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} />
@@ -379,6 +384,7 @@ const styles = StyleSheet.create({
   input: { minHeight: 51, borderRadius: 15, borderWidth: 1, paddingHorizontal: 14, fontSize: 13, fontFamily: 'Inter_400Regular' },
   titleHint: { fontSize: 10, lineHeight: 15, fontFamily: 'Inter_400Regular', marginTop: 7 },
   uncertainHint: { fontSize: 10, lineHeight: 15, fontFamily: 'Inter_600SemiBold', marginTop: 6 },
+  unresolvedHint: { fontSize: 10, lineHeight: 15, fontFamily: 'Inter_400Regular', marginTop: 6 },
   noteInput: { minHeight: 94, borderRadius: 15, borderWidth: 1, paddingHorizontal: 14, paddingTop: 13, fontSize: 13, lineHeight: 20, fontFamily: 'Inter_400Regular' },
   chipList: { gap: 8, paddingRight: 20 },
   wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
