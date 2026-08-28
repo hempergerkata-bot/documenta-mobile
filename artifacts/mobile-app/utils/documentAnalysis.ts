@@ -333,21 +333,17 @@ function findAmount(text: string, lines: string[], documentType?: string) {
   const labels =
     documentType === 'Lohnabrechnung / Gehaltsabrechnung'
       ? [
-          'Auszahlungsbetrag',
+          'Netto-Auszahlungsbetrag',
+          'Netto Auszahlungsbetrag',
           'Nettoauszahlung',
-          'Überweisungsbetrag',
-          'Nettoentgelt',
-          'Nettobetrag',
-          'Nettoverdienst',
-          'Netto-Bezüge',
-          'Netto Bezüge',
+          'Auszahlungsbetrag',
           'Auszahlung netto',
         ]
       : ['Rechnungsbetrag', 'Gesamtbetrag', 'Zahlbetrag', 'Forderungsbetrag', 'Zu zahlen'];
   for (const label of labels) {
     for (const [lineIndex, line] of lines.entries()) {
       const forward = line.match(
-        new RegExp(`\\b${label}\\b[^\\d]{0,28}${amountPattern}`, 'i'),
+        new RegExp(`\\b${label}\\b\\s*[:=\\-]?\\s*${amountPattern}`, 'i'),
       );
       if (forward?.[1]) {
         return {
@@ -356,7 +352,7 @@ function findAmount(text: string, lines: string[], documentType?: string) {
         };
       }
       const reverse = line.match(
-        new RegExp(`${amountPattern}[^\\p{L}\\d]{0,16}\\b${label}\\b`, 'iu'),
+        new RegExp(`${amountPattern}\\s*[:=\\-]?\\s*\\b${label}\\b`, 'iu'),
       );
       if (reverse?.[1]) {
         return {

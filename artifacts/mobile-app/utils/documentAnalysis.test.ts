@@ -73,7 +73,7 @@ test('extracts payroll fields when OCR splits labels and values across lines', (
     Abrechnungsdatum
     31.08.2026
     Brutto-Bezüge 3.920,00
-    Netto-Bezüge
+    Nettoauszahlung
     2.548,77 EUR
   `);
 
@@ -199,7 +199,9 @@ test('ignores a generic advance payout and selects the explicit final payout', (
     Gehaltsabrechnung
     Arbeitgeber: Nordlicht Logistik GmbH
     Arbeitnehmer: Tobias Beispiel
-    Auszahlung Vorschuss 500,00 EUR
+    Auszahlungsbetrag Vorschuss 500,00 EUR
+    Überweisungsbetrag Pfändung 250,00 EUR
+    Netto-Bezüge 2798,77 EUR
     Nettoauszahlung 2548,77 EUR
   `);
 
@@ -211,7 +213,9 @@ test('leaves amount unresolved when only a generic payout component exists', () 
     Gehaltsabrechnung
     Arbeitgeber: Nordlicht Logistik GmbH
     Arbeitnehmer: Tobias Beispiel
-    Auszahlung Prämie 500,00 EUR
+    Auszahlungsbetrag Prämie 500,00 EUR
+    Überweisungsbetrag Pfändung 250,00 EUR
+    Netto-Bezüge 2798,77 EUR
   `);
 
   assert.equal(result.fields.amount, undefined);
