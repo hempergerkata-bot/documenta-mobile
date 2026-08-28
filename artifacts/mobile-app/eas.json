@@ -14,6 +14,8 @@
       }
     },
     "preview": {
+      "node": "20.19.4",
+      "corepack": true,
       "distribution": "internal",
       "android": {
         "buildType": "apk"
