@@ -4,10 +4,14 @@
   },
   "build": {
     "development": {
+      "node": "20.19.4",
+      "pnpm": "10.26.1",
+      "corepack": true,
       "developmentClient": true,
       "distribution": "internal",
       "android": {
-        "buildType": "apk"
+        "buildType": "apk",
+        "image": "latest"
       }
     },
     "preview": {
