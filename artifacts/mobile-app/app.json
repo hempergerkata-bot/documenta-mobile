@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "mobile-app",
+    "scheme": "documenta",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "extra": {
@@ -16,7 +16,7 @@
     "splash": {
       "image": "./assets/images/icon.png",
       "resizeMode": "contain",
-    "backgroundColor": "#f8f7f3"
+      "backgroundColor": "#f8f7f3"
     },
     "ios": {
       "supportsTablet": false
@@ -41,6 +41,22 @@
         "react-native-document-scanner-plugin",
         {
           "cameraPermission": "Documenta benötigt Kamerazugriff, um Dokumente zu scannen."
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#E57A5C",
+          "defaultChannel": "documenta-local"
+        }
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Documenta uses calendar access only after you confirm a calendar event.",
+          "remindersPermission": "Documenta uses reminders only after your explicit confirmation."
         }
       ]
     ],

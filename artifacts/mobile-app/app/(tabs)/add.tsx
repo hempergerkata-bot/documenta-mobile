@@ -9,10 +9,12 @@ import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from '
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
+import { useTranslation } from '@/hooks/useTranslation';
 import { scanDocumentPages } from '@/utils/documentScanner';
 
 export default function AddDocumentScreen() {
   const colors = useColors();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { setPendingAsset } = useApp();
   const [scanning, setScanning] = useState(false);
@@ -28,13 +30,13 @@ export default function AddDocumentScreen() {
   const handleCamera = async () => {
     if (Platform.OS === 'web') {
       setScannerNotice(
-        'Im Browser ist kein Dokumentenscanner verfügbar. Kantenerkennung, automatischer Zuschnitt, Perspektivkorrektur und der 4-Ecken-Editor laufen ausschließlich in der installierten Android- oder iOS-App.',
+        t('add.browserScanner'),
       );
       return;
     }
     if (Constants.executionEnvironment === ExecutionEnvironment.StoreClient) {
       setScannerNotice(
-        'Expo Go kann den nativen Dokumentenscanner nicht laden. Öffne Documenta als Development Build / Expo Dev Client. Dort startet der Google-ML-Kit-Scanner auf Android bzw. der Apple-VisionKit-Scanner auf iOS – keine normale Kamera.',
+        t('add.expoScanner'),
       );
       return;
     }
@@ -46,7 +48,7 @@ export default function AddDocumentScreen() {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       setPendingAsset({
         uri: result.scannedImages[0],
-        name: `${result.scannedImages.length} gescannte ${result.scannedImages.length === 1 ? 'Seite' : 'Seiten'}`,
+        name: `${result.scannedImages.length} ${result.scannedImages.length === 1 ? t('common.page') : t('common.pages')}`,
         mimeType: 'application/x-document-scan',
         source: 'scanner',
         pageUris: result.scannedImages,
@@ -54,7 +56,7 @@ export default function AddDocumentScreen() {
       router.push('/scan-review' as never);
     } catch {
       setScannerNotice(
-        'Der echte Dokumentenscanner konnte nicht gestartet werden. Er benötigt einen Development Build / Expo Dev Client mit dem nativen Scanner-Modul; Expo Go wird nicht unterstützt.',
+        t('add.scannerError'),
       );
     } finally {
       setScanning(false);
@@ -68,7 +70,7 @@ export default function AddDocumentScreen() {
     });
     if (!result.canceled) {
       const selected = result.assets[0];
-      openDetails({ uri: selected.uri, name: selected.fileName ?? 'Bild.jpg', mimeType: selected.mimeType }, 'gallery');
+      openDetails({ uri: selected.uri, name: selected.fileName ?? `${t('add.image')}.jpg`, mimeType: selected.mimeType }, 'gallery');
     }
   };
 
@@ -93,31 +95,31 @@ export default function AddDocumentScreen() {
       <View style={styles.content}>
         <View style={styles.header}>
           <View>
-            <Text style={[styles.kicker, { color: colors.coral }]}>NEUES DOKUMENT</Text>
-            <Text style={[styles.title, { color: colors.navy }]}>Dokument hinzufügen</Text>
-            <Text style={[styles.intro, { color: colors.mutedForeground }]}>Wähle eine Quelle aus. Danach kannst du alle Details ergänzen.</Text>
+            <Text style={[styles.kicker, { color: colors.coral }]}>{t('add.kicker')}</Text>
+            <Text style={[styles.title, { color: colors.navy }]}>{t('add.title')}</Text>
+            <Text style={[styles.intro, { color: colors.mutedForeground }]}>{t('add.intro')}</Text>
           </View>
-          <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.closeButton, { backgroundColor: colors.card, borderColor: colors.border }, pressed && styles.pressed]} accessibilityLabel="Schließen">
+          <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.closeButton, { backgroundColor: colors.card, borderColor: colors.border }, pressed && styles.pressed]} accessibilityLabel={t('common.close')}>
             <Feather name="x" size={20} color={colors.navy} />
           </Pressable>
         </View>
 
-        <Text style={[styles.sectionTitle, { color: colors.navy }]}>Quelle auswählen</Text>
+        <Text style={[styles.sectionTitle, { color: colors.navy }]}>{t('add.source')}</Text>
         <View style={styles.sourceGrid}>
           <Pressable disabled={scanning} onPress={() => void handleCamera()} style={({ pressed }) => [styles.sourceCard, { backgroundColor: colors.navy }, pressed && styles.pressed, scanning && styles.disabled]} testID="camera-source">
             <View style={[styles.sourceIcon, { backgroundColor: colors.coral }]}><Feather name={scanning ? 'loader' : 'maximize'} size={22} color={colors.white} /></View>
-            <Text style={styles.sourceTitleDark}>{scanning ? 'Scanner startet…' : 'Scannen'}</Text>
-            <Text style={styles.sourceSubtitleDark}>Kanten · Zuschnitt · PDF</Text>
+            <Text style={styles.sourceTitleDark}>{scanning ? t('add.scanning') : t('dashboard.scan')}</Text>
+            <Text style={styles.sourceSubtitleDark}>{t('add.scanFeatures')}</Text>
           </Pressable>
           <Pressable onPress={() => void handleGallery()} style={({ pressed }) => [styles.sourceCard, { backgroundColor: colors.card, borderColor: colors.border }, pressed && styles.pressed]} testID="gallery-source">
             <View style={[styles.sourceIcon, { backgroundColor: colors.sun }]}><Feather name="image" size={22} color={colors.navy} /></View>
-            <Text style={[styles.sourceTitle, { color: colors.navy }]}>Bild</Text>
-            <Text style={[styles.sourceSubtitle, { color: colors.mutedForeground }]}>Aus Galerie</Text>
+            <Text style={[styles.sourceTitle, { color: colors.navy }]}>{t('add.image')}</Text>
+            <Text style={[styles.sourceSubtitle, { color: colors.mutedForeground }]}>{t('add.gallery')}</Text>
           </Pressable>
           <Pressable onPress={() => void handleFile()} style={({ pressed }) => [styles.sourceCard, { backgroundColor: colors.card, borderColor: colors.border }, pressed && styles.pressed]} testID="file-source">
             <View style={[styles.sourceIcon, { backgroundColor: colors.coralSoft }]}><Feather name="file-text" size={22} color={colors.coral} /></View>
             <Text style={[styles.sourceTitle, { color: colors.navy }]}>PDF</Text>
-            <Text style={[styles.sourceSubtitle, { color: colors.mutedForeground }]}>Aus Dateien</Text>
+            <Text style={[styles.sourceSubtitle, { color: colors.mutedForeground }]}>{t('add.files')}</Text>
           </Pressable>
         </View>
 
@@ -125,10 +127,10 @@ export default function AddDocumentScreen() {
           <View style={[styles.scannerNotice, { backgroundColor: colors.coralSoft, borderColor: colors.coral }]} testID="scanner-native-notice">
             <Feather name="smartphone" size={18} color={colors.coral} />
             <View style={styles.scannerNoticeCopy}>
-              <Text style={[styles.scannerNoticeTitle, { color: colors.navy }]}>Development Build erforderlich</Text>
+              <Text style={[styles.scannerNoticeTitle, { color: colors.navy }]}>{t('add.devBuild')}</Text>
               <Text style={[styles.scannerNoticeText, { color: colors.mutedForeground }]}>{scannerNotice}</Text>
             </View>
-            <Pressable onPress={() => setScannerNotice('')} accessibilityLabel="Hinweis schließen">
+            <Pressable onPress={() => setScannerNotice('')} accessibilityLabel={t('add.closeNotice')}>
               <Feather name="x" size={17} color={colors.coral} />
             </Pressable>
           </View>
@@ -137,16 +139,16 @@ export default function AddDocumentScreen() {
         <View style={[styles.infoCard, { backgroundColor: colors.sage }]}>
           <View style={[styles.infoIcon, { backgroundColor: colors.card }]}><Feather name="lock" size={16} color={colors.sageDeep} /></View>
           <View style={styles.infoCopy}>
-            <Text style={[styles.infoTitle, { color: colors.sageDeep }]}>Privat auf deinem Gerät</Text>
-            <Text style={[styles.infoText, { color: colors.sageDeep }]}>In dieser Version bleiben Dokument und Details lokal gespeichert.</Text>
+            <Text style={[styles.infoTitle, { color: colors.sageDeep }]}>{t('add.privateTitle')}</Text>
+            <Text style={[styles.infoText, { color: colors.sageDeep }]}>{t('add.privateText')}</Text>
           </View>
         </View>
 
         <View style={[styles.futureCard, { borderColor: colors.border }]}>
           <Feather name="mail" size={17} color={colors.mutedForeground} />
           <View style={styles.futureCopy}>
-            <Text style={[styles.futureTitle, { color: colors.navy }]}>E-Mail-Import kommt später</Text>
-            <Text style={[styles.futureText, { color: colors.mutedForeground }]}>Gmail und Outlook werden bewusst noch nicht verbunden.</Text>
+            <Text style={[styles.futureTitle, { color: colors.navy }]}>{t('add.emailTitle')}</Text>
+            <Text style={[styles.futureText, { color: colors.mutedForeground }]}>{t('add.emailText')}</Text>
           </View>
         </View>
       </View>

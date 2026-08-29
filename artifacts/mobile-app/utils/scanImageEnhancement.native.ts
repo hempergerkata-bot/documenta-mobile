@@ -7,11 +7,22 @@ import { File } from 'expo-file-system';
 import { copyAsync } from 'expo-file-system/legacy';
 import { decode, encode } from 'jpeg-js';
 import { Image } from 'react-native';
+import {
+  assessReconstruction,
+  type DocumentVariant,
+  type ReconstructionDiagnostics,
+} from '@/utils/documentReconstruction';
 
 export type EnhancementResult = {
   mode: 'enhanced' | 'original';
   width?: number;
   height?: number;
+};
+
+export type ReconstructionResult = {
+  variants: Record<Exclude<DocumentVariant, 'original'>, string>;
+  diagnostics: ReconstructionDiagnostics;
+  nativeOpenCv: boolean;
 };
 
 const clamp = (value: number, min = 0, max = 255) =>
@@ -293,4 +304,187 @@ export async function enhanceScanPage(
       }
     }
   }
+}
+
+/**
+ * Builds the two non-destructive renderings.  The scanner source is never
+ * modified; callers keep it as the `original` variant. OpenCV creates both
+ * processed variants in one allocation scope so all native buffers are released.
+ */
+export async function reconstructScanPage(
+  sourceUri: string,
+  cleanUri: string,
+  blackWhiteUri: string,
+): Promise<ReconstructionResult> {
+  const clean = await enhanceScanPage(sourceUri, cleanUri);
+  const cleanFile = new File(cleanUri);
+  const bytes = await cleanFile.bytes();
+  const decoded = decode(bytes, { useTArray: true, formatAsRGBA: true, tolerantDecoding: true });
+  const pixels = decoded.width * decoded.height;
+  let sum = 0;
+  let sumSquared = 0;
+  let shadows = 0;
+  let faint = 0;
+  for (let offset = 0; offset < decoded.data.length; offset += 4) {
+    const y = 0.2126 * decoded.data[offset] + 0.7152 * decoded.data[offset + 1] + 0.0722 * decoded.data[offset + 2];
+    sum += y;
+    sumSquared += y * y;
+    if (y < 105) shadows += 1;
+    if (y >= 145 && y < 190) faint += 1;
+  }
+  const contrast = Math.sqrt(Math.max(0, sumSquared / pixels - (sum / pixels) ** 2));
+  const diagnostics = assessReconstruction(
+    clean.mode === 'enhanced' ? 34 : 0,
+    0,
+    clean.mode === 'enhanced' ? 0.92 : 1,
+    contrast,
+    shadows / pixels,
+    faint / pixels,
+  );
+  diagnostics.dimensions = { width: decoded.width, height: decoded.height };
+  diagnostics.corners = [
+    { x: 0, y: 0 },
+    { x: decoded.width - 1, y: 0 },
+    { x: decoded.width - 1, y: decoded.height - 1 },
+    { x: 0, y: decoded.height - 1 },
+  ];
+  diagnostics.stages = [
+    { name: 'scannerBoundary', status: 'applied', detail: 'ML-Kit scanner crop is retained as the trusted four-corner boundary.' },
+    { name: 'perspective', status: 'skipped', detail: 'No second warp: a second perspective transform without reliable new corners would damage scanner-corrected text.' },
+  ];
+
+  let nativeOpenCv = false;
+  let nativeQualityRejected = false;
+  try {
+    // Require lazily: Expo Go or a stale development client has no JSI module.
+    // Such a failure is intentionally non-fatal and falls through to JS below.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const cv = require('react-native-fast-opencv') as {
+      OpenCV: {
+        base64ToMat(value: string): { id: string };
+         createObject(type: number, ...args: number[]): { id: string };
+        invoke(name: string, ...args: unknown[]): unknown;
+        matToBuffer(mat: { id: string }, type: 'uint8' | 'int32'): { buffer: Uint8Array | Int32Array };
+        saveMatToFile(mat: { id: string }, path: string, format: 'jpeg', compression: number): void;
+        releaseBuffers(ids: string[]): void;
+      };
+      ColorConversionCodes: { COLOR_RGBA2GRAY: number };
+      AdaptiveThresholdTypes: { ADAPTIVE_THRESH_GAUSSIAN_C: number };
+      ThresholdTypes: { THRESH_BINARY: number };
+      MorphTypes: { MORPH_BLACKHAT: number };
+      BorderTypes: { BORDER_DEFAULT: number };
+      DataTypes: { CV_8UC1: number };
+      ObjectType: { Mat: number; Size: number };
+    };
+    const { OpenCV, ColorConversionCodes, AdaptiveThresholdTypes, ThresholdTypes, MorphTypes, BorderTypes, DataTypes, ObjectType } = cv;
+    const mats: { id: string }[] = [];
+    try {
+      const source = OpenCV.base64ToMat(BufferPolyfill.from(bytes).toString('base64'));
+      mats.push(source);
+      const emptyMat = () => OpenCV.createObject(ObjectType.Mat, 0, 0, DataTypes.CV_8UC1);
+      const denoised = emptyMat();
+      mats.push(denoised);
+      const gray = emptyMat();
+      mats.push(gray);
+      const binary = emptyMat();
+      mats.push(binary);
+      const illumination = emptyMat();
+      const normalized = emptyMat();
+      const softened = emptyMat();
+      const sharpened = emptyMat();
+      const edges = emptyMat();
+      const lines = emptyMat();
+      const backgroundKernelSize = OpenCV.createObject(ObjectType.Size, 51, 51);
+      const sharpenKernelSize = OpenCV.createObject(ObjectType.Size, 3, 3);
+      mats.push(
+        illumination,
+        normalized,
+        softened,
+        sharpened,
+        edges,
+        lines,
+        backgroundKernelSize,
+        sharpenKernelSize,
+      );
+      // Edge-preserving denoise, background division and restrained unsharp
+      // masking create an actual illumination-normalized native clean image.
+      OpenCV.invoke('bilateralFilter', source, denoised, 7, 45, 45, BorderTypes.BORDER_DEFAULT);
+      OpenCV.invoke('cvtColor', denoised, gray, ColorConversionCodes.COLOR_RGBA2GRAY);
+      OpenCV.invoke('GaussianBlur', gray, illumination, backgroundKernelSize, 0);
+      OpenCV.invoke('divide', gray, illumination, normalized, 242, -1);
+      OpenCV.invoke('GaussianBlur', normalized, softened, sharpenKernelSize, 0);
+      OpenCV.invoke('addWeighted', normalized, 1.28, softened, -0.28, 0, sharpened);
+      OpenCV.invoke('Canny', sharpened, edges, 48, 132);
+      OpenCV.invoke('HoughLinesP', edges, lines, 1, Math.PI / 180, 42);
+      const edgeBytes = OpenCV.matToBuffer(edges, 'uint8').buffer as Uint8Array;
+      const lineData = OpenCV.matToBuffer(lines, 'int32').buffer as Int32Array;
+      diagnostics.edgeDensity = edgeBytes.reduce((count, value) => count + (value > 0 ? 1 : 0), 0) / edgeBytes.length;
+      const lineAngles: number[] = [];
+      for (let i = 0; i + 3 < lineData.length; i += 4) {
+        lineAngles.push(Math.abs(Math.atan2(lineData[i + 3] - lineData[i + 1], lineData[i + 2] - lineData[i])) * 180 / Math.PI);
+      }
+      diagnostics.lineStraightness = lineAngles.length
+        ? lineAngles.reduce((sum, angle) => sum + Math.min(Math.abs(angle), Math.abs(90 - angle), Math.abs(180 - angle)), 0) / lineAngles.length
+        : undefined;
+      diagnostics.blur = 1 - Math.min(1, (diagnostics.edgeDensity ?? 0) * 18);
+      const cleanBytes = OpenCV.matToBuffer(sharpened, 'uint8').buffer as Uint8Array;
+      let sourceInk = 0;
+      let retainedInk = 0;
+      let clipped = 0;
+      for (let index = 0; index < cleanBytes.length; index += 1) {
+        if (decoded.data[index * 4] < 210) {
+          sourceInk += 1;
+          if (cleanBytes[index] < 225) retainedInk += 1;
+        }
+        if (cleanBytes[index] > 252 && decoded.data[index * 4] < 235) clipped += 1;
+      }
+      diagnostics.retainedInk = sourceInk ? retainedInk / sourceInk : 1;
+      diagnostics.clippedHighlights = clipped / Math.max(1, cleanBytes.length);
+      diagnostics.stages?.push(
+        { name: 'denoise', status: 'applied', detail: 'OpenCV bilateral filtering preserves character edges.' },
+        { name: 'illumination', status: 'applied', detail: 'OpenCV morphology estimates uneven illumination before binarization.' },
+        { name: 'edgeLines', status: 'applied', detail: `${lineAngles.length} Hough line segments measured for skew/straightness.` },
+      );
+      if (
+        (diagnostics.blur ?? 0) > 0.82 ||
+        (diagnostics.edgeDensity ?? 0) < 0.006 ||
+        diagnostics.retainedInk < 0.78 ||
+        diagnostics.clippedHighlights > 0.16
+      ) {
+        diagnostics.accepted = false;
+        nativeQualityRejected = true;
+        diagnostics.warnings.push('Zu unscharf oder zu wenig Kanten – Original ist die sichere Wahl.');
+        diagnostics.stages?.push({ name: 'qualityGate', status: 'fallback', detail: 'Native clean output rejected; conservative clean rendering retained.' });
+        throw new Error('Native clean quality gate rejected output');
+      }
+      OpenCV.saveMatToFile(sharpened, cleanUri.replace('file://', ''), 'jpeg', 0.96);
+      OpenCV.invoke('adaptiveThreshold', sharpened, binary, 255, AdaptiveThresholdTypes.ADAPTIVE_THRESH_GAUSSIAN_C, ThresholdTypes.THRESH_BINARY, 35, 11);
+      OpenCV.saveMatToFile(binary, blackWhiteUri.replace('file://', ''), 'jpeg', 0.94);
+      nativeOpenCv = new File(blackWhiteUri).exists;
+      diagnostics.stages?.push({ name: 'binarize', status: 'applied', detail: 'OpenCV adaptive Gaussian threshold generated Schwarzweiß.' });
+    } finally {
+      OpenCV.releaseBuffers(mats.map((mat) => mat.id));
+    }
+  } catch {
+    nativeOpenCv = false;
+    diagnostics.stages?.push({ name: 'binarize', status: 'fallback', detail: 'Native OpenCV unavailable or rejected; safe local monochrome fallback used.' });
+  }
+  if (nativeQualityRejected) {
+    const cleanOutput = new File(cleanUri);
+    if (cleanOutput.exists) cleanOutput.delete();
+    await copyAsync({ from: sourceUri, to: cleanUri });
+  }
+  if (!nativeOpenCv) {
+    const output = new Uint8Array(decoded.data);
+    const threshold = Math.max(125, Math.min(205, sum / pixels - contrast * 0.22));
+    for (let offset = 0; offset < output.length; offset += 4) {
+      const y = 0.2126 * output[offset] + 0.7152 * output[offset + 1] + 0.0722 * output[offset + 2];
+      const value = y > threshold ? 255 : 0;
+      output[offset] = value; output[offset + 1] = value; output[offset + 2] = value; output[offset + 3] = 255;
+    }
+    const outputFile = new File(blackWhiteUri);
+    if (outputFile.exists) outputFile.delete();
+    outputFile.write(encode({ width: decoded.width, height: decoded.height, data: output }, 94).data);
+  }
+  return { variants: { clean: cleanUri, blackWhite: blackWhiteUri }, diagnostics, nativeOpenCv };
 }

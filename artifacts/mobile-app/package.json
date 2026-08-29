@@ -7,7 +7,9 @@
     "dev": "EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN EXPO_PUBLIC_REPL_ID=$REPL_ID pnpm exec expo start --tunnel --port $PORT",
     "build": "node scripts/build.js",
     "serve": "node server/serve.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:core": "rm -rf .core-test && tsc utils/documentCore.ts utils/documentCore.test.ts utils/documentDomain.ts utils/documentDomain.test.ts utils/documentIntelligence.ts utils/documentIntelligence.test.ts utils/actionEngine.ts utils/actionEngine.test.ts utils/archive.ts utils/archive.test.ts utils/localization.ts utils/localization.test.ts utils/countryRegistry.ts utils/explanationExperience.ts utils/explanationExperience.test.ts utils/ttsCapability.ts utils/ttsCapability.test.ts utils/semanticSearch.ts utils/semanticSearch.test.ts utils/premiumIntegrations.ts utils/premiumLocalization.ts utils/premiumIntegrations.test.ts utils/realIntegrations.ts utils/realIntegrations.test.ts utils/backupCrypto.ts utils/backupCrypto.test.ts utils/backupDomain.ts utils/backupDomain.test.ts utils/localBackup.ts utils/localBackup.test.ts utils/backupService.ts utils/backupService.test.ts utils/googleDriveAdapter.ts utils/googleDriveAdapter.test.ts --target es2020 --module commonjs --moduleResolution node --esModuleInterop --skipLibCheck --outDir .core-test && node .core-test/documentCore.test.js && node .core-test/documentDomain.test.js && node .core-test/documentIntelligence.test.js && node .core-test/actionEngine.test.js && node .core-test/archive.test.js && node .core-test/localization.test.js && node .core-test/explanationExperience.test.js && node .core-test/ttsCapability.test.js && node .core-test/semanticSearch.test.js && node .core-test/premiumIntegrations.test.js && node .core-test/realIntegrations.test.js && node .core-test/backupCrypto.test.js && node .core-test/backupDomain.test.js && node .core-test/localBackup.test.js && node .core-test/backupService.test.js && node .core-test/googleDriveAdapter.test.js && rm -rf .core-test",
+    "audit:localization": "node scripts/audit-localization.js"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
@@ -58,17 +60,25 @@
   "dependencies": {
     "@react-native-ml-kit/text-recognition": "2.0.0",
     "buffer": "6.0.3",
+    "expo-auth-session": "~7.0.11",
+    "expo-calendar": "~15.0.8",
+    "expo-crypto": "~15.0.9",
     "expo-dev-client": "6.0.21",
     "expo-document-picker": "~14.0.8",
     "expo-file-system": "~19.0.24",
     "expo-image-manipulator": "~14.0.8",
+    "expo-notifications": "~0.32.17",
     "expo-print": "~15.0.8",
+    "expo-secure-store": "~15.0.8",
     "expo-sharing": "~14.0.8",
+    "expo-speech": "~14.0.8",
     "jpeg-js": "0.4.4",
     "pdf-lib": "^1.17.1",
     "react-native-blob-util": "0.24.10",
     "react-native-document-scanner-plugin": "2.0.4",
+    "react-native-fast-opencv": "0.4.8",
     "react-native-pdf": "7.0.5",
+    "react-native-quick-crypto": "0.7.17",
     "react-native-webview": "13.15.0"
   }
 }

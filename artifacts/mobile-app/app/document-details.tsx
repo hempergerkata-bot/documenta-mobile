@@ -1,17 +1,21 @@
 import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useEffect, useRef, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { DocumentRecord, DocumentStatus, useApp } from '@/context/AppContext';
+import { DocumentRecord, DocumentStatus, DOCUMENT_STATUSES, useApp } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
+import { useTranslation } from '@/hooks/useTranslation';
+import { documentCategoryLabel, documentFieldLabel, documentPlaceholder, documentStatusLabel, documentTypeLabel } from '@/utils/localization';
 import { persistDocumentAsset } from '@/utils/documentFiles';
 import { deletePersistentScannedDocument } from '@/utils/scanPdf';
 import type { DocumentAnalysisField } from '@/utils/documentAnalysis';
 
-const categories = ['Versicherungen', 'Familie', 'Finanzen', 'Arbeit & Bildung', 'Wohnen', 'Auto', 'Gesundheit', 'Behörden', 'Verträge'];
-const people = ['Ich', 'Partner', 'Kind', 'Haushalt', 'Auto'];
+import { GENERAL_CATEGORIES } from '@/utils/documentCore';
+import { documentFingerprint, findDuplicates } from '@/utils/documentDomain';
+import { analyzeDocumentIntelligence, normalizeDocumentDate } from '@/utils/documentIntelligence';
+const categories = GENERAL_CATEGORIES;
 const documentTypes = [
   'Rechnung',
   'Mahnung',
@@ -28,27 +32,18 @@ const documentTypes = [
   'Brief',
   'Nachweis',
 ];
-const statusOptions: DocumentStatus[] = ['Offen', 'Bezahlt', 'Erledigt', 'Später'];
-const additionalFieldLabels: Record<string, string> = {
-  referenceNumber: 'Aktenzeichen / Referenz',
-  customerNumber: 'Kundennummer',
-  invoiceNumber: 'Rechnungsnummer',
-  contractNumber: 'Vertragsnummer',
-  insuranceNumber: 'Versicherungsnummer',
-  iban: 'IBAN',
-  taxNumber: 'Steuernummer / Steuer-ID',
-  patientNumber: 'Patienten- / Fallnummer',
-  schoolReference: 'Schul- / Betreuungsreferenz',
-};
+const statusOptions: DocumentStatus[] = [...DOCUMENT_STATUSES];
+const additionalFieldLabels = ['referenceNumber', 'customerNumber', 'invoiceNumber', 'contractNumber', 'insuranceNumber', 'iban', 'taxNumber', 'patientNumber', 'schoolReference'] as const;
 
 export default function DocumentDetailsScreen() {
   const colors = useColors();
+  const { t, language } = useTranslation();
   const insets = useSafeAreaInsets();
-  const { pendingAsset, addDocument, clearPendingAsset } = useApp();
+  const { pendingAsset, addDocument, clearPendingAsset, profiles, activeDocuments } = useApp();
   const [title, setTitle] = useState('');
   const [sender, setSender] = useState('');
   const [category, setCategory] = useState(
-    pendingAsset?.source === 'scanner' ? '' : 'Versicherungen',
+    pendingAsset?.source === 'scanner' ? '' : 'Versicherung',
   );
   const [subcategory, setSubcategory] = useState('');
   const [documentType, setDocumentType] = useState(
@@ -61,8 +56,9 @@ export default function DocumentDetailsScreen() {
   const [person, setPerson] = useState(
     pendingAsset?.source === 'scanner' ? '' : 'Ich',
   );
+  const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([]);
   const [status, setStatus] = useState<DocumentStatus | ''>(
-    pendingAsset?.source === 'scanner' ? '' : 'Offen',
+    pendingAsset?.source === 'scanner' ? '' : 'Neu',
   );
   const [tags, setTags] = useState('');
   const [note, setNote] = useState('');
@@ -70,6 +66,7 @@ export default function DocumentDetailsScreen() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const savedRef = useRef(false);
+  const duplicateApprovedRef = useRef(false);
   const analysisAppliedRef = useRef(false);
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
   const uncertainFields = new Set(pendingAsset?.analysis?.uncertainFields ?? []);
@@ -78,7 +75,7 @@ export default function DocumentDetailsScreen() {
     !!title.trim() &&
     !!category &&
     !!documentType &&
-    !!person.trim() &&
+    selectedProfileIds.length > 0 &&
     !!status &&
     !!pendingAsset &&
     !saving;
@@ -90,6 +87,8 @@ export default function DocumentDetailsScreen() {
           pendingAsset.pdfUri,
           pendingAsset.pageUris,
           pendingAsset.originalPageUris,
+          pendingAsset.blackWhitePageUris,
+        pendingAsset.cleanPageUris,
         );
       }
     };
@@ -120,7 +119,7 @@ export default function DocumentDetailsScreen() {
     const suggestedTags = fields.tags?.value;
     if (Array.isArray(suggestedTags)) setTags(suggestedTags.join(', '));
     const extractedAdditionalFields: Record<string, string> = {};
-    for (const field of Object.keys(additionalFieldLabels)) {
+    for (const field of additionalFieldLabels) {
       const value = fields[field as DocumentAnalysisField]?.value;
       if (typeof value === 'string' && value.trim()) {
         extractedAdditionalFields[field] = value;
@@ -132,17 +131,58 @@ export default function DocumentDetailsScreen() {
   const analysisHint = (field: DocumentAnalysisField) =>
     uncertainFields.has(field) ? (
       <Text style={[styles.uncertainHint, { color: colors.coral }]}>
-        Automatisch erkannt · unsicher – bitte prüfen
+        {t('details.uncertainHint')}
       </Text>
     ) : unresolvedFields.has(field) && pendingAsset?.ocrStatus === 'complete' ? (
       <Text style={[styles.unresolvedHint, { color: colors.mutedForeground }]}>
-        Im OCR-Text nicht eindeutig gefunden – bitte manuell ergänzen
+        {t('details.unresolvedHint')}
       </Text>
     ) : null;
 
   const saveDocument = async () => {
     const trimmedTitle = title.trim();
     if (!canSave || !pendingAsset || !status) return;
+    const duplicateProbe: DocumentRecord = {
+      id: pendingAsset.documentId ?? `candidate-${Date.now()}`,
+      title: trimmedTitle,
+      sender: sender.trim(),
+      category,
+      subcategory: subcategory.trim(),
+      documentType,
+      documentDate: documentDate.trim(),
+      amount: amount.trim() || undefined,
+      person,
+      status,
+      tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+      createdAt: new Date().toISOString(),
+    };
+    duplicateProbe.fingerprint = documentFingerprint(duplicateProbe);
+    const duplicates = findDuplicates(duplicateProbe, activeDocuments);
+    if (duplicates.length > 0 && !duplicateApprovedRef.current) {
+      const duplicateMessage = t('details.duplicateText', { titles: duplicates.map((item) => item.title).join(', ') });
+      if (Platform.OS === 'web') {
+        if (window.confirm(`${t('details.duplicateTitle')}\n\n${duplicateMessage}`)) {
+          duplicateApprovedRef.current = true;
+          void saveDocument();
+        }
+        return;
+      }
+      Alert.alert(
+        t('details.duplicateTitle'),
+        duplicateMessage,
+        [
+          { text: t('common.cancel'), style: 'cancel' },
+          {
+            text: t('details.saveAnyway'),
+            onPress: () => {
+              duplicateApprovedRef.current = true;
+              void saveDocument();
+            },
+          },
+        ],
+      );
+      return;
+    }
     setSaving(true);
     setSaveError('');
     const id = pendingAsset.documentId ?? `document-${Date.now()}`;
@@ -153,7 +193,7 @@ export default function DocumentDetailsScreen() {
           ? pendingAsset.pdfUri
           : persistDocumentAsset(pendingAsset, id);
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : 'Die Datei konnte nicht gespeichert werden.');
+      setSaveError(error instanceof Error ? error.message : t('details.fileSaveError'));
       setSaving(false);
       return;
     }
@@ -166,9 +206,10 @@ export default function DocumentDetailsScreen() {
       documentType,
       documentDate: documentDate.trim(),
       payrollPeriod: payrollPeriod.trim() || undefined,
-      dueDate: dueDate.trim() || undefined,
+      dueDate: normalizeDocumentDate(dueDate.trim()),
       amount: amount.trim() || undefined,
-      person,
+       person: profiles.find((profile) => profile.id === selectedProfileIds[0])?.name ?? person,
+       profileIds: selectedProfileIds,
       status,
       tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean),
       note: note.trim() || undefined,
@@ -177,6 +218,10 @@ export default function DocumentDetailsScreen() {
       pdfUri: pendingAsset.pdfUri,
       pageUris: pendingAsset.pageUris,
       originalPageUris: pendingAsset.originalPageUris,
+      cleanPageUris: pendingAsset.cleanPageUris,
+      blackWhitePageUris: pendingAsset.blackWhitePageUris,
+      selectedVariant: pendingAsset.selectedVariant,
+      reconstructionDiagnostics: pendingAsset.reconstructionDiagnostics,
       ocrText: pendingAsset.analysis?.text || undefined,
       analysisUncertainFields: pendingAsset.analysis?.uncertainFields,
       structuredFields: additionalFields,
@@ -186,6 +231,37 @@ export default function DocumentDetailsScreen() {
           value?.confidence,
         ]),
       ),
+      intelligence: pendingAsset.analysis
+        ? analyzeDocumentIntelligence({
+            text: pendingAsset.analysis.text,
+            structuredFields: {
+              title: trimmedTitle,
+              sender: sender.trim(),
+              category,
+              subcategory: subcategory.trim(),
+              documentType,
+              documentDate: documentDate.trim(),
+              dueDate: dueDate.trim(),
+              amount: amount.trim(),
+              person,
+              status,
+              tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+              ...additionalFields,
+            },
+            relatedDocuments: activeDocuments.map((item) => ({
+              id: item.id,
+              text: item.ocrText,
+              title: item.title,
+              sender: item.sender,
+              date: item.documentDate,
+              references: Object.values(item.structuredFields ?? {}),
+              amount: item.amount,
+              dueDate: item.dueDate,
+              status: item.status,
+              person: item.person,
+            })),
+          })
+        : undefined,
       createdAt: new Date().toISOString(),
     };
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -204,12 +280,12 @@ export default function DocumentDetailsScreen() {
     >
       <View style={styles.content}>
         <View style={styles.header}>
-          <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.backButton, { backgroundColor: colors.card, borderColor: colors.border }, pressed && styles.pressed]} accessibilityLabel="Zurück">
+          <Pressable onPress={() => router.back()} style={({ pressed }) => [styles.backButton, { backgroundColor: colors.card, borderColor: colors.border }, pressed && styles.pressed]} accessibilityLabel={t('common.back')}>
             <Feather name="arrow-left" size={19} color={colors.navy} />
           </Pressable>
           <View style={styles.headerCopy}>
-            <Text style={[styles.kicker, { color: colors.coral }]}>DOKUMENT ABLEGEN</Text>
-            <Text style={[styles.heading, { color: colors.navy }]}>Dokumentdetails</Text>
+            <Text style={[styles.kicker, { color: colors.coral }]}>{t('details.kicker')}</Text>
+            <Text style={[styles.heading, { color: colors.navy }]}>{t('document.details')}</Text>
           </View>
           <View style={[styles.step, { backgroundColor: colors.coralSoft }]}><Text style={[styles.stepText, { color: colors.coral }]}>2/2</Text></View>
         </View>
@@ -217,8 +293,8 @@ export default function DocumentDetailsScreen() {
         <View style={[styles.assetBar, { backgroundColor: colors.sage }]}>
           <View style={[styles.assetIcon, { backgroundColor: colors.card }]}><Feather name={pendingAsset?.mimeType?.includes('pdf') ? 'file' : 'image'} size={18} color={colors.sageDeep} /></View>
           <View style={styles.assetCopy}>
-            <Text style={[styles.assetName, { color: colors.sageDeep }]} numberOfLines={1}>{pendingAsset?.name ?? 'Dokument ausgewählt'}</Text>
-            <Text style={[styles.assetMeta, { color: colors.sageDeep }]}>{pendingAsset?.source === 'scanner' ? `${pendingAsset.pageUris?.length ?? 0} Seiten · Original + optimierte PDF gespeichert` : pendingAsset ? 'Bereit zur Ablage' : 'Keine Datei ausgewählt'}</Text>
+            <Text style={[styles.assetName, { color: colors.sageDeep }]} numberOfLines={1}>{pendingAsset?.name ?? t('details.assetSelected')}</Text>
+            <Text style={[styles.assetMeta, { color: colors.sageDeep }]}>{pendingAsset?.source === 'scanner' ? t('details.scannedMeta',{count:pendingAsset.pageUris?.length ?? 0}) : pendingAsset ? t('details.assetReady') : t('details.noAsset')}</Text>
           </View>
           <Feather name="check-circle" size={20} color={colors.sageDeep} />
         </View>
@@ -258,10 +334,10 @@ export default function DocumentDetailsScreen() {
                 ]}
               >
                 {pendingAsset.ocrStatus === 'complete'
-                  ? 'Lokale Dokumentanalyse abgeschlossen'
+                  ? t('details.analysisComplete')
                   : pendingAsset.ocrStatus === 'empty'
-                    ? 'Kein lesbarer Text erkannt'
-                    : 'Dokumentanalyse nicht verfügbar'}
+                    ? t('details.noText')
+                    : t('details.analysisUnavailable')}
               </Text>
               <Text
                 style={[
@@ -275,46 +351,46 @@ export default function DocumentDetailsScreen() {
                 ]}
               >
                 {pendingAsset.ocrStatus === 'complete'
-                  ? 'Vorschläge wurden nur aus lesbarem Dokumenttext übernommen. Unsichere Felder sind markiert und alles bleibt bearbeitbar.'
-                  : 'Bitte fülle die Angaben manuell aus. Es wurden keine Daten erfunden.'}
+                  ? t('details.analysisCompleteText')
+                  : t('details.analysisManualText')}
               </Text>
             </View>
           </View>
         ) : null}
 
-        <Text style={[styles.sectionTitle, { color: colors.navy }]}>Dokumentdetails</Text>
-        <Text style={[styles.sectionSubtitle, { color: colors.mutedForeground }]}>Pflichtfelder sind mit einem klaren Titel markiert.</Text>
+        <Text style={[styles.sectionTitle, { color: colors.navy }]}>{t('document.details')}</Text>
+        <Text style={[styles.sectionSubtitle, { color: colors.mutedForeground }]}>{t('details.requiredHint')}</Text>
 
-        <Text style={[styles.label, { color: colors.navy }]}>Titel</Text>
-        <TextInput value={title} onChangeText={setTitle} placeholder="z. B. AOK PLUS – Versicherungsstatus Hochschule" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} testID="details-title-input" />
+        <Text style={[styles.label, { color: colors.navy }]}>{t('document.title')}</Text>
+        <TextInput value={title} onChangeText={setTitle} placeholder={documentPlaceholder('title', language)} placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} testID="details-title-input" />
         {analysisHint('title')}
         <Text style={[styles.titleHint, { color: colors.mutedForeground }]}>
-          Trage nur einen Titel ein, der eindeutig aus dem Dokument hervorgeht. Du kannst ihn vor dem Speichern jederzeit bearbeiten.
+          {t('details.titleHint')}
         </Text>
 
-        <Text style={[styles.label, { color: colors.navy }]}>Absender / Institution</Text>
-        <TextInput value={sender} onChangeText={setSender} placeholder="z. B. Allianz Versicherung" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} testID="details-sender-input" />
+        <Text style={[styles.label, { color: colors.navy }]}>{t('details.senderInstitution')}</Text>
+        <TextInput value={sender} onChangeText={setSender} placeholder={documentPlaceholder('sender', language)} placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} testID="details-sender-input" />
         {analysisHint('sender')}
 
-        <Text style={[styles.label, { color: colors.navy }]}>Kategorie</Text>
+        <Text style={[styles.label, { color: colors.navy }]}>{t('document.category')}</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipList}>
           {categories.map((item) => (
             <Pressable key={item} onPress={() => setCategory(item)} style={[styles.chip, { backgroundColor: category === item ? colors.coral : colors.card, borderColor: category === item ? colors.coral : colors.border }]}>
-              <Text style={[styles.chipText, { color: category === item ? colors.white : colors.navy }]}>{item}</Text>
+              <Text style={[styles.chipText, { color: category === item ? colors.white : colors.navy }]}>{documentCategoryLabel(item, language)}</Text>
             </Pressable>
           ))}
         </ScrollView>
         {analysisHint('category')}
 
-        <Text style={[styles.label, { color: colors.navy }]}>Unterkategorie</Text>
-        <TextInput value={subcategory} onChangeText={setSubcategory} placeholder="z. B. Haftpflicht" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} />
+        <Text style={[styles.label, { color: colors.navy }]}>{t('document.subcategory')}</Text>
+        <TextInput value={subcategory} onChangeText={setSubcategory} placeholder={documentPlaceholder('subcategory', language)} placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} />
         {analysisHint('subcategory')}
 
-        <Text style={[styles.label, { color: colors.navy }]}>Dokumenttyp</Text>
+        <Text style={[styles.label, { color: colors.navy }]}>{t('document.type')}</Text>
         <View style={styles.wrap}>
           {documentTypes.map((item) => (
             <Pressable key={item} onPress={() => setDocumentType(item)} style={[styles.chip, { backgroundColor: documentType === item ? colors.navy : colors.card, borderColor: documentType === item ? colors.navy : colors.border }]}>
-              <Text style={[styles.chipText, { color: documentType === item ? colors.white : colors.navy }]}>{item}</Text>
+              <Text style={[styles.chipText, { color: documentType === item ? colors.white : colors.navy }]}>{documentTypeLabel(item, language)}</Text>
             </Pressable>
           ))}
         </View>
@@ -322,24 +398,24 @@ export default function DocumentDetailsScreen() {
 
         <View style={styles.twoColumn}>
           <View style={styles.column}>
-            <Text style={[styles.label, { color: colors.navy }]}>Dokumentdatum</Text>
-            <TextInput value={documentDate} onChangeText={setDocumentDate} placeholder="TT.MM.JJJJ" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} keyboardType="numbers-and-punctuation" />
+            <Text style={[styles.label, { color: colors.navy }]}>{t('details.documentDate')}</Text>
+            <TextInput value={documentDate} onChangeText={setDocumentDate} placeholder={documentPlaceholder('date', language)} placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} keyboardType="numbers-and-punctuation" />
             {analysisHint('documentDate')}
           </View>
           <View style={styles.column}>
-            <Text style={[styles.label, { color: colors.navy }]}>Frist / Fälligkeitsdatum</Text>
-            <TextInput value={dueDate} onChangeText={setDueDate} placeholder="TT.MM.JJJJ" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} keyboardType="numbers-and-punctuation" />
+            <Text style={[styles.label, { color: colors.navy }]}>{t('document.dueDate')}</Text>
+            <TextInput value={dueDate} onChangeText={setDueDate} placeholder={documentPlaceholder('date', language)} placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} keyboardType="numbers-and-punctuation" />
             {analysisHint('dueDate')}
           </View>
         </View>
 
         {documentType === 'Lohnabrechnung / Gehaltsabrechnung' ? (
           <>
-            <Text style={[styles.label, { color: colors.navy }]}>Abrechnungszeitraum</Text>
+            <Text style={[styles.label, { color: colors.navy }]}>{documentFieldLabel('payrollPeriod', language)}</Text>
             <TextInput
               value={payrollPeriod}
               onChangeText={setPayrollPeriod}
-              placeholder="z. B. Juli 2026 oder 07/2026"
+              placeholder={documentPlaceholder('payrollPeriod', language)}
               placeholderTextColor={colors.mutedForeground}
               style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]}
               testID="details-payroll-period-input"
@@ -348,14 +424,14 @@ export default function DocumentDetailsScreen() {
           </>
         ) : null}
 
-        <Text style={[styles.label, { color: colors.navy }]}>Betrag <Text style={{ color: colors.mutedForeground, fontFamily: 'Inter_400Regular' }}>(optional)</Text></Text>
-        <TextInput value={amount} onChangeText={setAmount} placeholder="z. B. 128,40 €" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} keyboardType="decimal-pad" />
+        <Text style={[styles.label, { color: colors.navy }]}>{t('document.amount')} <Text style={{ color: colors.mutedForeground, fontFamily: 'Inter_400Regular' }}>({t('details.optional')})</Text></Text>
+        <TextInput value={amount} onChangeText={setAmount} placeholder={documentPlaceholder('amount', language)} placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} keyboardType="decimal-pad" />
         {analysisHint('amount')}
 
         {Object.entries(additionalFields).map(([field, value]) => (
           <View key={field}>
             <Text style={[styles.label, { color: colors.navy }]}>
-              {additionalFieldLabels[field] ?? field}
+              {documentFieldLabel(field, language)}
             </Text>
             <TextInput
               value={value}
@@ -380,11 +456,11 @@ export default function DocumentDetailsScreen() {
           </View>
         ))}
 
-        <Text style={[styles.label, { color: colors.navy }]}>Zugehörige Person</Text>
+        <Text style={[styles.label, { color: colors.navy }]}>{t('details.person')}</Text>
         <TextInput
           value={person}
           onChangeText={setPerson}
-          placeholder="Name aus dem Dokument oder eigene Zuordnung"
+          placeholder={t('details.personPlaceholder')}
           placeholderTextColor={colors.mutedForeground}
           style={[
             styles.input,
@@ -398,33 +474,33 @@ export default function DocumentDetailsScreen() {
         />
         {analysisHint('person')}
         <View style={styles.wrap}>
-          {people.map((item) => (
-            <Pressable key={item} onPress={() => setPerson(item)} style={[styles.chip, { backgroundColor: person === item ? colors.sageDeep : colors.card, borderColor: person === item ? colors.sageDeep : colors.border }]}>
-              <Text style={[styles.chipText, { color: person === item ? colors.white : colors.navy }]}>{item}</Text>
+           {profiles.map((item) => (
+             <Pressable key={item.id} onPress={() => setSelectedProfileIds((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} style={[styles.chip, { backgroundColor: selectedProfileIds.includes(item.id) ? colors.sageDeep : colors.card, borderColor: selectedProfileIds.includes(item.id) ? colors.sageDeep : colors.border }]}>
+               <Text style={[styles.chipText, { color: selectedProfileIds.includes(item.id) ? colors.white : colors.navy }]}>{item.name}</Text>
             </Pressable>
           ))}
         </View>
 
-        <Text style={[styles.label, { color: colors.navy }]}>Status</Text>
+        <Text style={[styles.label, { color: colors.navy }]}>{t('common.status')}</Text>
         <View style={styles.wrap}>
           {statusOptions.map((item) => (
             <Pressable key={item} onPress={() => setStatus(item)} style={[styles.chip, { backgroundColor: status === item ? colors.accent : colors.card, borderColor: status === item ? colors.accent : colors.border }]}>
-              <Text style={[styles.chipText, { color: status === item ? colors.accentForeground : colors.navy }]}>{item}</Text>
+              <Text style={[styles.chipText, { color: status === item ? colors.accentForeground : colors.navy }]}>{documentStatusLabel(item, language)}</Text>
             </Pressable>
           ))}
         </View>
         {analysisHint('status')}
 
-        <Text style={[styles.label, { color: colors.navy }]}>Tags</Text>
-        <TextInput value={tags} onChangeText={setTags} placeholder="z. B. wichtig, 2025, versicherung" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} />
+        <Text style={[styles.label, { color: colors.navy }]}>{t('document.tags')}</Text>
+        <TextInput value={tags} onChangeText={setTags} placeholder={documentPlaceholder('tags', language)} placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} />
         {analysisHint('tags')}
 
-        <Text style={[styles.label, { color: colors.navy }]}>Notiz</Text>
-        <TextInput value={note} onChangeText={setNote} placeholder="Eigene Notiz hinzufügen" placeholderTextColor={colors.mutedForeground} multiline textAlignVertical="top" style={[styles.noteInput, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} />
+        <Text style={[styles.label, { color: colors.navy }]}>{t('document.note')}</Text>
+        <TextInput value={note} onChangeText={setNote} placeholder={documentPlaceholder('note', language)} placeholderTextColor={colors.mutedForeground} multiline textAlignVertical="top" style={[styles.noteInput, { color: colors.navy, backgroundColor: colors.card, borderColor: colors.border }]} />
 
         {saveError ? <Text style={[styles.saveError, { color: colors.coral }]}>{saveError}</Text> : null}
         <Pressable onPress={saveDocument} disabled={!canSave} style={({ pressed }) => [styles.saveButton, { backgroundColor: canSave ? colors.coral : colors.muted }, pressed && styles.pressed]} testID="save-details-button">
-          <Text style={[styles.saveText, { color: canSave ? colors.white : colors.mutedForeground }]}>{saving ? 'Datei wird gespeichert…' : 'Dokument speichern'}</Text>
+          <Text style={[styles.saveText, { color: canSave ? colors.white : colors.mutedForeground }]}>{saving ? t('details.saving') : t('details.save')}</Text>
           <Feather name={saving ? 'loader' : 'check'} size={19} color={canSave ? colors.white : colors.mutedForeground} />
         </Pressable>
       </View>

@@ -15,13 +15,16 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
+import { useTranslation } from '@/hooks/useTranslation';
 import { scanDocumentPages } from '@/utils/documentScanner';
 import { createPersistentScannedDocument, deleteTemporaryScanPages } from '@/utils/scanPdf';
 import { recognizeAndAnalyzeDocument } from '@/utils/documentOcr';
 import { MAX_SCAN_PAGES } from '@/utils/scanLimits';
+import type { DocumentVariant } from '@/utils/documentReconstruction';
 
 export default function ScanReviewScreen() {
   const colors = useColors();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { pendingAsset, setPendingAsset, clearPendingAsset } = useApp();
   const [pages, setPages] = useState<string[]>(pendingAsset?.pageUris ?? []);
@@ -29,11 +32,12 @@ export default function ScanReviewScreen() {
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState('');
   const [error, setError] = useState('');
+  const [selectedVariant, setSelectedVariant] = useState<DocumentVariant>('clean');
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
 
   const scanMore = async (replaceIndex?: number) => {
     setBusy(true);
-    setBusyLabel('Scanner wird geöffnet…');
+    setBusyLabel(t('scan.opening'));
     setError('');
     try {
       const result = await scanDocumentPages();
@@ -45,7 +49,7 @@ export default function ScanReviewScreen() {
       if (nextPageCount > MAX_SCAN_PAGES) {
         deleteTemporaryScanPages(result.scannedImages);
         setError(
-          `Maximal ${MAX_SCAN_PAGES} hochauflösende Seiten pro Dokument. Bitte speichere den aktuellen Scan und beginne danach ein neues Dokument.`,
+          t('scan.limit', { count: MAX_SCAN_PAGES }),
         );
         return;
       }
@@ -63,7 +67,7 @@ export default function ScanReviewScreen() {
       }
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {
-      setError('Der Scanner konnte nicht erneut geöffnet werden. Prüfe den Kamerazugriff.');
+      setError(t('scan.openError'));
     } finally {
       setBusy(false);
       setBusyLabel('');
@@ -72,7 +76,7 @@ export default function ScanReviewScreen() {
 
   const removePage = (index: number) => {
     if (pages.length === 1) {
-      Alert.alert('Letzte Seite', 'Ein Dokument muss mindestens eine Seite enthalten.');
+      Alert.alert(t('scan.lastPageTitle'), t('scan.lastPageText'));
       return;
     }
     deleteTemporaryScanPages([pages[index]]);
@@ -84,12 +88,12 @@ export default function ScanReviewScreen() {
   const createPdf = async () => {
     if (pages.length === 0 || busy) return;
     setBusy(true);
-    setBusyLabel('Seiten werden verbessert…');
+    setBusyLabel(t('scan.enhancing'));
     setError('');
     const documentId = `document-${Date.now()}`;
     try {
-      const result = await createPersistentScannedDocument(pages, documentId);
-      setBusyLabel('Text und Dokumenttyp werden erkannt…');
+      const result = await createPersistentScannedDocument(pages, documentId, selectedVariant);
+      setBusyLabel(t('scan.recognizing'));
       let analysis;
       let ocrStatus: 'complete' | 'empty' | 'failed' = 'failed';
       try {
@@ -106,7 +110,11 @@ export default function ScanReviewScreen() {
         pdfUri: result.pdfUri,
         pageUris: result.pageUris,
         originalPageUris: result.originalPageUris,
-        name: `Documenta Scan · ${pages.length} ${pages.length === 1 ? 'Seite' : 'Seiten'}`,
+        cleanPageUris: result.cleanPageUris,
+        blackWhitePageUris: result.blackWhitePageUris,
+        selectedVariant: result.selectedVariant,
+        reconstructionDiagnostics: result.diagnostics,
+        name: `Documenta Scan · ${pages.length} ${pages.length === 1 ? t('common.page') : t('common.pages')}`,
         mimeType: 'application/pdf',
         source: 'scanner',
         documentId,
@@ -116,7 +124,7 @@ export default function ScanReviewScreen() {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace('/document-details');
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Die PDF-Datei konnte nicht erstellt werden.');
+      setError(caught instanceof Error ? caught.message : t('common.error'));
       setBusy(false);
       setBusyLabel('');
     }
@@ -136,9 +144,9 @@ export default function ScanReviewScreen() {
     return (
       <View style={[styles.emptyScreen, { backgroundColor: colors.background }]}>
         <Feather name="file-minus" size={30} color={colors.coral} />
-        <Text style={[styles.emptyTitle, { color: colors.navy }]}>Keine Scan-Seite vorhanden</Text>
+        <Text style={[styles.emptyTitle, { color: colors.navy }]}>{t('scan.empty')}</Text>
         <Pressable onPress={cancel} style={[styles.smallPrimary, { backgroundColor: colors.coral }]}>
-          <Text style={styles.primaryText}>Zurück</Text>
+          <Text style={styles.primaryText}>{t('common.back')}</Text>
         </Pressable>
       </View>
     );
@@ -152,12 +160,12 @@ export default function ScanReviewScreen() {
     >
       <View style={styles.content}>
         <View style={styles.header}>
-          <Pressable onPress={cancel} style={[styles.iconButton, { backgroundColor: colors.card, borderColor: colors.border }]} accessibilityLabel="Scan abbrechen">
+          <Pressable onPress={cancel} style={[styles.iconButton, { backgroundColor: colors.card, borderColor: colors.border }]} accessibilityLabel={t('scan.cancel')}>
             <Feather name="x" size={19} color={colors.navy} />
           </Pressable>
           <View style={styles.headerCopy}>
-            <Text style={[styles.kicker, { color: colors.coral }]}>SCAN PRÜFEN</Text>
-            <Text style={[styles.heading, { color: colors.navy }]}>Seitenvorschau</Text>
+            <Text style={[styles.kicker, { color: colors.coral }]}>{t('scan.kicker')}</Text>
+            <Text style={[styles.heading, { color: colors.navy }]}>{t('scan.preview')}</Text>
           </View>
           <View style={[styles.pageBadge, { backgroundColor: colors.sage }]}>
             <Text style={[styles.pageBadgeText, { color: colors.sageDeep }]}>{selectedPage + 1}/{pages.length}</Text>
@@ -168,7 +176,33 @@ export default function ScanReviewScreen() {
           <Image source={{ uri: pages[selectedPage] }} style={styles.previewImage} resizeMode="contain" testID="scan-page-preview" />
           <View style={[styles.enhancedBadge, { backgroundColor: colors.navy }]}>
             <Feather name="check-circle" size={13} color={colors.white} />
-            <Text style={[styles.enhancedText, { color: colors.white }]}>Kanten · Zuschnitt · Perspektive vom Scanner verarbeitet</Text>
+            <Text style={[styles.enhancedText, { color: colors.white }]}>{t('scan.processed')}</Text>
+          </View>
+        </View>
+
+        <View style={[styles.variantCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Text style={[styles.variantTitle, { color: colors.navy }]}>{t('scan.variantTitle')}</Text>
+          <Text style={[styles.variantHint, { color: colors.muted }]}>{t('scan.variantHint')}</Text>
+          <View style={styles.variantRow}>
+            {([
+              ['original', t('scan.original')],
+              ['clean', t('scan.clean')],
+              ['blackWhite', t('scan.blackWhite')],
+            ] as const).map(([variant, label]) => (
+              <Pressable
+                key={variant}
+                onPress={() => setSelectedVariant(variant)}
+                disabled={busy}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: selectedVariant === variant }}
+                style={[
+                  styles.variantButton,
+                  { borderColor: selectedVariant === variant ? colors.coral : colors.border, backgroundColor: selectedVariant === variant ? colors.sage : colors.background },
+                ]}
+              >
+                <Text style={[styles.variantText, { color: colors.navy }]}>{label}</Text>
+              </Pressable>
+            ))}
           </View>
         </View>
 
@@ -191,19 +225,19 @@ export default function ScanReviewScreen() {
         <View style={styles.actionRow}>
           <Pressable disabled={busy} onPress={() => void scanMore(selectedPage)} style={[styles.secondaryAction, { backgroundColor: colors.card, borderColor: colors.border }, busy && styles.disabled]} testID="rescan-page-button">
             <Feather name="crop" size={17} color={colors.navy} />
-            <Text style={[styles.secondaryText, { color: colors.navy }]}>Ecken neu korrigieren</Text>
+            <Text style={[styles.secondaryText, { color: colors.navy }]}>{t('scan.rescan')}</Text>
           </Pressable>
           <Pressable disabled={busy} onPress={() => removePage(selectedPage)} style={[styles.secondaryAction, { backgroundColor: colors.card, borderColor: colors.border }, busy && styles.disabled]} testID="remove-page-button">
             <Feather name="trash-2" size={17} color={colors.coral} />
-            <Text style={[styles.secondaryText, { color: colors.coral }]}>Entfernen</Text>
+            <Text style={[styles.secondaryText, { color: colors.coral }]}>{t('scan.remove')}</Text>
           </Pressable>
         </View>
 
         <View style={[styles.qualityCard, { backgroundColor: colors.sage }]}>
           <Feather name="maximize" size={17} color={colors.sageDeep} />
           <View style={styles.qualityCopy}>
-            <Text style={[styles.qualityTitle, { color: colors.sageDeep }]}>Echter nativer Dokumentenscan</Text>
-            <Text style={[styles.qualityText, { color: colors.sageDeep }]}>Der native Scanner erkennt alle vier Papierkanten, schneidet den Hintergrund weg und entzerrt die Perspektive. Bis zu {MAX_SCAN_PAGES} Seiten werden anschließend einzeln für eine helle, kontrastreiche PDF optimiert.</Text>
+            <Text style={[styles.qualityTitle, { color: colors.sageDeep }]}>{t('scan.nativeTitle')}</Text>
+            <Text style={[styles.qualityText, { color: colors.sageDeep }]}>{t('scan.nativeText', { count: MAX_SCAN_PAGES })}</Text>
           </View>
         </View>
 
@@ -211,13 +245,13 @@ export default function ScanReviewScreen() {
 
         <Pressable disabled={busy} onPress={() => void scanMore()} style={[styles.addPageButton, { borderColor: colors.coral }, busy && styles.disabled]} testID="add-scan-page-button">
           <Feather name="plus" size={19} color={colors.coral} />
-          <Text style={[styles.addPageText, { color: colors.coral }]}>Weitere Seite mit Kantenerkennung scannen</Text>
+          <Text style={[styles.addPageText, { color: colors.coral }]}>{t('scan.addPage')}</Text>
         </Pressable>
 
         <Pressable disabled={busy} onPress={() => void createPdf()} style={[styles.createButton, { backgroundColor: busy ? colors.muted : colors.coral }]} testID="create-scan-pdf-button">
           <View>
-            <Text style={[styles.createTitle, { color: colors.white }]}>{busy ? busyLabel || 'PDF wird erstellt…' : 'PDF erstellen & analysieren'}</Text>
-            <Text style={[styles.createSubtitle, { color: colors.white }]}>{pages.length} {pages.length === 1 ? 'Seite' : 'Seiten'} · Original + optimierte PDF · OCR lokal</Text>
+            <Text style={[styles.createTitle, { color: colors.white }]}>{busy ? busyLabel || t('scan.creating') : t('scan.create')}</Text>
+            <Text style={[styles.createSubtitle, { color: colors.white }]}>{t('scan.createSubtitle', { count: pages.length, pages: pages.length === 1 ? t('common.page') : t('common.pages'), variant: selectedVariant === 'clean' ? t('scan.clean') : selectedVariant === 'blackWhite' ? t('scan.blackWhite') : t('scan.original') })}</Text>
           </View>
           <Feather name="arrow-right" size={20} color={colors.white} />
         </Pressable>
@@ -240,6 +274,12 @@ const styles = StyleSheet.create({
   previewImage: { width: '100%', height: '100%', borderRadius: 14 },
   enhancedBadge: { position: 'absolute', left: 19, bottom: 19, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 6 },
   enhancedText: { fontSize: 9, fontFamily: 'Inter_700Bold' },
+  variantCard: { borderWidth: 1, borderRadius: 18, padding: 13, marginBottom: 14 },
+  variantTitle: { fontSize: 12, fontFamily: 'Inter_700Bold', marginBottom: 3 },
+  variantHint: { fontSize: 10, lineHeight: 14, fontFamily: 'Inter_400Regular', marginBottom: 10 },
+  variantRow: { gap: 7 },
+  variantButton: { minHeight: 36, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, justifyContent: 'center' },
+  variantText: { fontSize: 11, fontFamily: 'Inter_600SemiBold' },
   thumbnailList: { gap: 9, paddingVertical: 14, paddingRight: 20 },
   thumbnail: { width: 67, height: 84, borderRadius: 13, borderWidth: 2, padding: 3, overflow: 'hidden' },
   thumbnailImage: { width: '100%', height: '100%', borderRadius: 8 },

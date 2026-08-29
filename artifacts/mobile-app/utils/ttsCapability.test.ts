@@ -1,0 +1,15 @@
+import { hasMatchingLocalVoice, localVoicesForLocale, matchingLocalVoice, selectedLocalVoice } from './ttsCapability';
+declare function require(name: string): any;
+const assert = require('node:assert').strict;
+const voices = [{ lang: 'de-DE', name: 'Deutsch', localService: true }, { lang: 'hu-HU', name: 'Magyar', localService: true }, { lang: 'en-US', name: 'English', localService: true }, { lang: 'ar-SA', name: 'Cloud Arabic', localService: false }];
+assert.equal(hasMatchingLocalVoice(voices, 'de-DE'), true);
+assert.equal(hasMatchingLocalVoice(voices, 'hu-HU'), true);
+assert.equal(hasMatchingLocalVoice(voices, 'en-GB'), true);
+assert.equal(hasMatchingLocalVoice(voices, 'ar-SA'), false, 'cloud-only voice is not treated as a free local capability');
+assert.equal(matchingLocalVoice(voices, 'fr-FR'), undefined);
+assert.equal(hasMatchingLocalVoice([{ lang: 'de-DE' }], 'de-DE'), false, 'unknown locality is never advertised as local');
+const selectable = [{ identifier: 'de-standard', lang: 'de-DE', name: 'Standard', localService: true }, { identifier: 'de-premium', lang: 'de-AT', name: 'Premium', localService: true }, { identifier: 'de-cloud', lang: 'de-DE', localService: false }];
+assert.equal(localVoicesForLocale(selectable, 'de-DE').length, 2);
+assert.equal(selectedLocalVoice(selectable, 'de-DE', 'de-premium')?.identifier, 'de-premium');
+assert.equal(selectedLocalVoice(selectable, 'de-DE', 'gone')?.identifier, 'de-standard', 'an invalid preference safely falls back');
+console.log('TTS capability tests passed');

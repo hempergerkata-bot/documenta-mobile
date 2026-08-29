@@ -10,29 +10,32 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DocumentPdfPreview } from '@/components/DocumentPdfPreview';
+import { DocumentIntelligencePanel } from '@/components/DocumentIntelligencePanel';
 import { useApp } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
+import { useTranslation } from '@/hooks/useTranslation';
 import {
   exportDocumentPdf,
   printDocumentPdf,
   shareDocumentPdf,
 } from '@/utils/documentActions';
-
-const structuredFieldLabels: Record<string, string> = {
-  referenceNumber: 'Aktenzeichen / Referenz',
-  customerNumber: 'Kundennummer',
-  invoiceNumber: 'Rechnungsnummer',
-  contractNumber: 'Vertragsnummer',
-  insuranceNumber: 'Versicherungsnummer',
-  iban: 'IBAN',
-  taxNumber: 'Steuernummer / Steuer-ID',
-  patientNumber: 'Patienten- / Fallnummer',
-  schoolReference: 'Schul- / Betreuungsreferenz',
-};
+import { DOCUMENT_STATUSES, GENERAL_CATEGORIES, type DocumentStatus } from '@/utils/documentCore';
+import {
+  analyzeDocumentIntelligence,
+  applyReviewDecision,
+  applyReviewDecisions,
+  isCurrentDocumentIntelligence,
+  normalizeDocumentDate,
+  type ReviewDecision,
+} from '@/utils/documentIntelligence';
+import { documentStatusLabel } from '@/utils/localization';
+import { applyArchiveReview } from '@/utils/archive';
+import type { TranslationKey } from '@/utils/localization';
 
 function MetadataRow({
   label,
@@ -53,13 +56,42 @@ function MetadataRow({
 
 export default function SavedDocumentDetailScreen() {
   const colors = useColors();
+  const { t, date, currency, language } = useTranslation();
+  const relationshipLabel = (kind: typeof relationshipKind) => ({
+    vorheriges: t('document.relationshipPrevious'), antwort: t('document.relationshipReply'),
+    erinnerung: t('document.relationshipReminder'), zahlung: t('document.relationshipPayment'),
+    abschluss: t('document.relationshipCompletion'),
+  }[kind]);
+  const structuredFieldLabel = (field: string) => ({
+    referenceNumber: t('document.referenceNumber'), customerNumber: t('document.customerNumber'),
+    invoiceNumber: t('document.invoiceNumber'), contractNumber: t('document.contractNumber'),
+    insuranceNumber: t('document.insuranceNumber'), iban: 'IBAN', taxNumber: t('document.taxNumber'),
+    patientNumber: t('document.patientNumber'), schoolReference: t('document.schoolReference'),
+  }[field] ?? field);
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { documents } = useApp();
+    const { activeDocuments: documents, updateDocument, profiles, relationships, cases, archiveDocument, trashDocument, addRelationship, updateCase, documentTimeline } = useApp();
   const [fullScreen, setFullScreen] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
   const [originalPageIndex, setOriginalPageIndex] = useState(0);
+  const [showOcr, setShowOcr] = useState(false);
+  const [editing, setEditing] = useState(false);
+   const [relationshipTarget, setRelationshipTarget] = useState('');
+   const [relationshipKind, setRelationshipKind] = useState<'vorheriges' | 'antwort' | 'erinnerung' | 'zahlung' | 'abschluss'>('antwort');
+  const [edit, setEdit] = useState({ title: '', sender: '', documentType: '', documentDate: '', receivedDate: '', relevantPeriodStart: '', relevantPeriodEnd: '', archiveYear: '', dueDate: '', amount: '', tags: '', note: '', category: '', status: 'Neu' as DocumentStatus, profileIds: [] as string[] });
   const document = documents.find((item) => item.id === id);
+  const intelligence =
+    (isCurrentDocumentIntelligence(document?.intelligence) ? document.intelligence : undefined) ??
+    (document?.ocrText
+      ? analyzeDocumentIntelligence({
+          text: document.ocrText,
+          structuredFields: {
+            ...document.structuredFields,
+            sender: document.sender,
+            documentDate: document.documentDate,
+          },
+        })
+      : undefined);
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
   const originalPages = document?.originalPageUris ?? [];
   const previewUri =
@@ -71,14 +103,48 @@ export default function SavedDocumentDetailScreen() {
     (document?.mimeType?.toLowerCase().includes('pdf') ||
       previewUri?.toLowerCase().split('?')[0].endsWith('.pdf'));
   const pdfUri = document?.pdfUri ?? (isPdf ? previewUri : undefined);
+  const openEdit = () => { if (!document) return; setEdit({ title: document.title, sender: document.sender, documentType: document.documentType, documentDate: document.documentDate, receivedDate: document.receivedDate ?? '', relevantPeriodStart: document.relevantPeriodStart ?? '', relevantPeriodEnd: document.relevantPeriodEnd ?? '', archiveYear: document.archiveYear?.toString() ?? '', dueDate: document.dueDate ?? '', amount: document.amount ?? '', tags: document.tags.join(', '), note: document.note ?? '', category: document.category, status: document.status, profileIds: document.profileIds ?? [] }); setEditing(true); };
+  const saveEdit = () => {
+    if (!document || !edit.title.trim() || !edit.profileIds.length) return;
+    const intelligenceReviewDecisions = Object.fromEntries(
+      Object.entries(document.intelligenceReviewDecisions ?? {}).map(([field, decision]) => [field, decision === 'edit' ? 'accept' : decision]),
+    ) as Record<string, ReviewDecision>;
+    const { archiveYear: archiveYearInput, ...editFields } = edit;
+    const correctedBase = { ...document, ...editFields, title: edit.title.trim(), sender: edit.sender.trim(), receivedDate: normalizeDocumentDate(edit.receivedDate.trim()), relevantPeriodStart: normalizeDocumentDate(edit.relevantPeriodStart.trim()), relevantPeriodEnd: normalizeDocumentDate(edit.relevantPeriodEnd.trim()), tags: edit.tags.split(',').map((tag) => tag.trim()).filter(Boolean), dueDate: normalizeDocumentDate(edit.dueDate.trim()), amount: edit.amount.trim() || undefined, note: edit.note.trim() || undefined, person: profiles.find((profile) => profile.id === edit.profileIds[0])?.name ?? document.person, intelligenceReviewDecisions };
+    const selectedArchiveYear = Number(archiveYearInput);
+    const corrected = selectedArchiveYear >= 1900 && selectedArchiveYear <= new Date().getUTCFullYear() + 1
+      ? applyArchiveReview(correctedBase, { archiveYear: selectedArchiveYear, reviewStatus: 'corrected', at: new Date().toISOString(), reason: 'corrected' })
+      : correctedBase;
+    const recalculated = document.ocrText ? analyzeDocumentIntelligence({ text: document.ocrText, structuredFields: { ...document.structuredFields, sender: corrected.sender, documentDate: corrected.documentDate, dueDate: corrected.dueDate, amount: corrected.amount, status: corrected.status } }) : undefined;
+    updateDocument({ ...corrected, intelligence: recalculated ? applyReviewDecisions(recalculated, intelligenceReviewDecisions) : document.intelligence });
+    setEditing(false);
+  };
+  const setReviewDecision = (field: string, decision: ReviewDecision) => {
+    if (!document || !intelligence) return;
+    updateDocument({
+      ...document,
+      intelligenceReviewDecisions: { ...document.intelligenceReviewDecisions, [field]: decision },
+      intelligence: applyReviewDecision(intelligence, field, decision),
+    });
+  };
+  const confirmLifecycleAction = (title: string, message: string, confirmLabel: string, destructive: boolean, action: () => void) => {
+    if (Platform.OS === 'web') {
+      if (window.confirm(`${title}\n\n${message}`)) action();
+      return;
+    }
+    Alert.alert(title, message, [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: confirmLabel, style: destructive ? 'destructive' : 'default', onPress: action },
+    ]);
+  };
 
   const runDocumentAction = async (action: () => Promise<void>) => {
     try {
       await action();
     } catch (error) {
       Alert.alert(
-        'Aktion nicht möglich',
-        error instanceof Error ? error.message : 'Bitte versuche es erneut.',
+        t('document.actionUnavailable'),
+        error instanceof Error ? error.message : t('document.tryAgain'),
       );
     }
   };
@@ -87,9 +153,9 @@ export default function SavedDocumentDetailScreen() {
     return (
       <View style={[styles.missingScreen, { backgroundColor: colors.background }]}>
         <Feather name="file-minus" size={30} color={colors.coral} />
-        <Text style={[styles.missingTitle, { color: colors.navy }]}>Dokument nicht gefunden</Text>
+        <Text style={[styles.missingTitle, { color: colors.navy }]}>{t('document.noDocument')}</Text>
         <Pressable onPress={() => router.back()} style={[styles.primaryButton, { backgroundColor: colors.coral }]}>
-          <Text style={styles.primaryButtonText}>Zurück</Text>
+          <Text style={styles.primaryButtonText}>{t('common.back')}</Text>
         </Pressable>
       </View>
     );
@@ -104,9 +170,9 @@ export default function SavedDocumentDetailScreen() {
   ) : (
     <View style={[styles.noOriginal, { backgroundColor: colors.sage }]}>
       <Feather name="file-text" size={30} color={colors.sageDeep} />
-      <Text style={[styles.noOriginalTitle, { color: colors.sageDeep }]}>Kein Original verfügbar</Text>
+       <Text style={[styles.noOriginalTitle, { color: colors.sageDeep }]}>{t('document.noOriginal')}</Text>
       <Text style={[styles.noOriginalText, { color: colors.sageDeep }]}>
-        Dieses Beispieldokument wurde ohne Bild oder PDF gespeichert.
+        {t('document.sampleNoOriginal')}
       </Text>
     </View>
   );
@@ -123,13 +189,19 @@ export default function SavedDocumentDetailScreen() {
             <Pressable
               onPress={() => router.back()}
               style={({ pressed }) => [styles.backButton, { backgroundColor: colors.card, borderColor: colors.border }, pressed && styles.pressed]}
-              accessibilityLabel="Zurück"
+              accessibilityLabel={t('common.back')}
               testID="document-detail-back"
             >
               <Feather name="arrow-left" size={19} color={colors.navy} />
             </Pressable>
+            <Pressable onPress={openEdit} style={[styles.backButton, { backgroundColor: colors.coralSoft, borderColor: colors.border }]} accessibilityLabel={t('common.edit')}>
+              <Feather name="edit-2" size={18} color={colors.coral} />
+            </Pressable>
+            <Pressable onPress={() => updateDocument({ ...document, status: document.status === 'Abgeschlossen' ? 'Gelesen' : 'Abgeschlossen' })} style={[styles.backButton, { backgroundColor: colors.sage, borderColor: colors.border }]} accessibilityLabel={t('common.status')}>
+              <Feather name="check" size={19} color={colors.sageDeep} />
+            </Pressable>
             <View style={styles.headerCopy}>
-              <Text style={[styles.kicker, { color: colors.coral }]}>DOKUMENT</Text>
+              <Text style={[styles.kicker, { color: colors.coral }]}>{t('document.title').toUpperCase()}</Text>
               <Text style={[styles.heading, { color: colors.navy }]} numberOfLines={2}>{document.title}</Text>
             </View>
           </View>
@@ -151,7 +223,7 @@ export default function SavedDocumentDetailScreen() {
                       { color: !showOriginal ? colors.white : colors.navy },
                     ]}
                   >
-                    Optimierte PDF
+                    {t('documents.optimizedPdf')}
                   </Text>
                 </Pressable>
                 <Pressable
@@ -168,7 +240,7 @@ export default function SavedDocumentDetailScreen() {
                       { color: showOriginal ? colors.white : colors.navy },
                     ]}
                   >
-                    Original
+                    {t('documents.original')}
                   </Text>
                 </Pressable>
               </View>
@@ -190,7 +262,7 @@ export default function SavedDocumentDetailScreen() {
                   <Feather name="chevron-left" size={16} color={colors.navy} />
                 </Pressable>
                 <Text style={[styles.pageIndicator, { color: colors.navy }]}>
-                  Original {originalPageIndex + 1}/{originalPages.length}
+                  {t('documents.original')} {originalPageIndex + 1}/{originalPages.length}
                 </Text>
                 <Pressable
                   disabled={originalPageIndex === originalPages.length - 1}
@@ -217,12 +289,23 @@ export default function SavedDocumentDetailScreen() {
                 testID="open-fullscreen-preview"
               >
                 <Feather name="maximize-2" size={16} color={colors.white} />
-                <Text style={[styles.fullScreenText, { color: colors.white }]}>Vollbild anzeigen</Text>
+                <Text style={[styles.fullScreenText, { color: colors.white }]}>{t('common.open')}</Text>
               </Pressable>
             ) : null}
           </View>
 
           <View style={styles.documentActions}>
+               <Pressable onPress={() => confirmLifecycleAction(t('document.archive'), t('document.restore'), t('document.archive'), false, () => { archiveDocument(document.id); router.replace('/documents'); })} style={[styles.actionButton, { backgroundColor: colors.card, borderColor: colors.border }]}><Feather name="archive" size={17} color={colors.navy} /><Text style={[styles.actionText, { color: colors.navy }]}>{t('document.archive')}</Text></Pressable>
+               <Pressable onPress={() => confirmLifecycleAction(t('document.trash'), t('document.restore'), t('document.trash'), true, () => { trashDocument(document.id); router.replace('/documents'); })} style={[styles.actionButton, { backgroundColor: colors.card, borderColor: colors.border }]}><Feather name="trash-2" size={17} color={colors.coral} /><Text style={[styles.actionText, { color: colors.navy }]}>{t('document.trash')}</Text></Pressable>
+            <Pressable onPress={() => router.push({ pathname: '/tasks', params: { documentId: document.id } })} style={[styles.actionButton, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <Feather name="check-square" size={17} color={colors.navy} /><Text style={[styles.actionText, { color: colors.navy }]}>{t('document.task')}</Text>
+            </Pressable>
+            <Pressable onPress={() => router.push({ pathname: '/ai-explanation', params: { id: document.id } })} style={[styles.actionButton, { backgroundColor: colors.card, borderColor: colors.border }]}>
+               <Feather name="cpu" size={17} color={colors.navy} /><Text style={[styles.actionText, { color: colors.navy }]}>{t('document.explain')}</Text>
+            </Pressable>
+             <Pressable accessibilityRole="button" accessibilityLabel={t('assistant.title')} onPress={() => router.push({ pathname: '/assistant', params: { documentId: document.id } })} style={[styles.actionButton, { backgroundColor: colors.card, borderColor: colors.border }]}>
+               <Feather name="message-circle" size={17} color={colors.navy} /><Text style={[styles.actionText, { color: colors.navy }]}>{t('assistant.title')}</Text>
+             </Pressable>
             <Pressable
               disabled={!previewUri}
               onPress={() => setFullScreen(true)}
@@ -230,7 +313,7 @@ export default function SavedDocumentDetailScreen() {
               testID="document-action-open"
             >
               <Feather name="maximize-2" size={17} color={colors.white} />
-              <Text style={[styles.actionText, { color: colors.white }]}>Öffnen</Text>
+               <Text style={[styles.actionText, { color: colors.white }]}>{t('common.open')}</Text>
             </Pressable>
             <Pressable
               disabled={!pdfUri}
@@ -239,7 +322,7 @@ export default function SavedDocumentDetailScreen() {
               testID="document-action-share"
             >
               <Feather name="share-2" size={17} color={colors.navy} />
-              <Text style={[styles.actionText, { color: colors.navy }]}>Teilen</Text>
+              <Text style={[styles.actionText, { color: colors.navy }]}>{t('document.share')}</Text>
             </Pressable>
             <Pressable
               disabled={!pdfUri}
@@ -248,7 +331,7 @@ export default function SavedDocumentDetailScreen() {
               testID="document-action-print"
             >
               <Feather name="printer" size={17} color={colors.navy} />
-              <Text style={[styles.actionText, { color: colors.navy }]}>Drucken</Text>
+              <Text style={[styles.actionText, { color: colors.navy }]}>{t('document.print')}</Text>
             </Pressable>
             <Pressable
               disabled={!pdfUri}
@@ -260,37 +343,62 @@ export default function SavedDocumentDetailScreen() {
               <Text style={[styles.actionText, { color: colors.white }]}>PDF</Text>
             </Pressable>
           </View>
+          {intelligence ? (
+            <View style={styles.intelligenceSection}>
+              <DocumentIntelligencePanel
+                result={intelligence}
+                onReview={openEdit}
+                onReviewDecision={setReviewDecision}
+              />
+            </View>
+          ) : null}
+           <Text style={[styles.sectionTitle, { color: colors.navy }]}>{t('document.relationships')}</Text>
+            <View style={[styles.metadataCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <MetadataRow label={t('document.relatedCases')} value={cases.filter((item) => item.documentIds.includes(document.id)).map((item) => item.title).join(', ')} colors={colors} />
+              <MetadataRow label={t('document.documentRelationships')} value={relationships.filter((item) => item.fromDocumentId === document.id || item.toDocumentId === document.id).map((item) => relationshipLabel(item.kind)).join(', ')} colors={colors} />
+               <Text style={[styles.metadataLabel, { color: colors.navy }]}>{t('document.linkToCase')}</Text>
+              <View style={styles.editChips}>{cases.map((item) => <Pressable key={item.id} onPress={() => updateCase({ ...item, documentIds: item.documentIds.includes(document.id) ? item.documentIds.filter((itemId) => itemId !== document.id) : [...item.documentIds, document.id], updatedAt: new Date().toISOString() })} style={[styles.editChip, { backgroundColor: item.documentIds.includes(document.id) ? colors.sageDeep : colors.card }]}><Text style={{ color: item.documentIds.includes(document.id) ? colors.white : colors.navy, fontSize: 10 }}>{item.title}</Text></Pressable>)}</View>
+               <Text style={[styles.metadataLabel, { color: colors.navy }]}>{t('document.createRelationship')}</Text>
+              <View style={styles.editChips}>{documents.filter((item) => item.id !== document.id && (item.lifecycle === 'aktiv' || !item.lifecycle)).map((item) => <Pressable key={item.id} onPress={() => setRelationshipTarget(item.id)} style={[styles.editChip, { backgroundColor: relationshipTarget === item.id ? colors.sageDeep : colors.card }]}><Text style={{ color: relationshipTarget === item.id ? colors.white : colors.navy, fontSize: 10 }}>{item.title}</Text></Pressable>)}</View>
+               <View style={styles.editChips}>{(['vorheriges', 'antwort', 'erinnerung', 'zahlung', 'abschluss'] as const).map((kind) => <Pressable key={kind} onPress={() => setRelationshipKind(kind)} style={[styles.editChip, { backgroundColor: relationshipKind === kind ? colors.coral : colors.card }]}><Text style={{ color: relationshipKind === kind ? colors.white : colors.navy, fontSize: 10 }}>{relationshipLabel(kind)}</Text></Pressable>)}</View>
+               <Pressable disabled={!relationshipTarget} onPress={() => { if (relationshipTarget) { addRelationship({ id: `relationship-${Date.now()}`, fromDocumentId: document.id, toDocumentId: relationshipTarget, kind: relationshipKind, createdAt: new Date().toISOString() }); setRelationshipTarget(''); } }} style={[styles.fullScreenButton, { backgroundColor: colors.navy, marginBottom: 12 }, !relationshipTarget && styles.disabled]}><Text style={[styles.fullScreenText, { color: colors.white }]}>{t('document.saveRelationship')}</Text></Pressable>
+           </View>
 
-          <Text style={[styles.sectionTitle, { color: colors.navy }]}>Dokumentdetails</Text>
+          <Text style={[styles.sectionTitle, { color: colors.navy }]}>{t('document.details')}</Text>
           <View style={[styles.metadataCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <MetadataRow label="Titel" value={document.title} colors={colors} />
-            <MetadataRow label="Absender" value={document.sender} colors={colors} />
-            <MetadataRow label="Kategorie" value={document.category} colors={colors} />
-            <MetadataRow label="Unterkategorie" value={document.subcategory} colors={colors} />
-            <MetadataRow label="Dokumenttyp" value={document.documentType} colors={colors} />
-            <MetadataRow label="Dokumentdatum" value={document.documentDate} colors={colors} />
-            <MetadataRow label="Abrechnungszeitraum" value={document.payrollPeriod} colors={colors} />
-            <MetadataRow label="Frist" value={document.dueDate} colors={colors} />
-            <MetadataRow label="Betrag" value={document.amount} colors={colors} />
-            <MetadataRow label="Person" value={document.person} colors={colors} />
-            <MetadataRow label="Status" value={document.status} colors={colors} />
-            <MetadataRow label="Tags" value={document.tags.join(', ')} colors={colors} />
-            <MetadataRow label="Notiz" value={document.note} colors={colors} />
+            <MetadataRow label={t('document.title')} value={document.title} colors={colors} />
+            <MetadataRow label={t('document.sender')} value={document.sender} colors={colors} />
+            <MetadataRow label={t('document.category')} value={document.category} colors={colors} />
+            <MetadataRow label={t('document.subcategory')} value={document.subcategory} colors={colors} />
+            <MetadataRow label={t('document.type')} value={document.documentType} colors={colors} />
+            <MetadataRow label={t('document.date')} value={date(document.documentDate)} colors={colors} />
+            <MetadataRow label={t('archive.archiveYear')} value={`${document.archiveYear ?? t('archive.unknownYear')} · ${document.archiveYearSource === 'manual' ? t('archive.manual') : t('archive.automatic')} · ${document.archiveYearConfidence ?? 'unknown'}`} colors={colors} />
+            <MetadataRow label={t('archive.receivedDate')} value={document.receivedDate ? date(document.receivedDate) : undefined} colors={colors} />
+            <MetadataRow label={t('archive.importedAt')} value={document.importedAt ? date(document.importedAt) : undefined} colors={colors} />
+            <MetadataRow label={t('archive.relevantPeriod')} value={[document.relevantPeriodStart ? date(document.relevantPeriodStart) : undefined, document.relevantPeriodEnd ? date(document.relevantPeriodEnd) : undefined].filter(Boolean).join(' – ')} colors={colors} />
+            <MetadataRow label={t('document.payrollPeriod')} value={document.payrollPeriod} colors={colors} />
+            <MetadataRow label={t('document.deadline')} value={date(document.dueDate)} colors={colors} />
+            <MetadataRow label={t('document.amount')} value={currency(document.amount)} colors={colors} />
+            <MetadataRow label={t('document.person')} value={document.person} colors={colors} />
+            <MetadataRow label={t('document.profiles')} value={document.profileIds?.map((id) => profiles.find((profile) => profile.id === id)?.name ?? id).join(', ')} colors={colors} />
+            <MetadataRow label={t('common.status')} value={documentStatusLabel(document.status, language)} colors={colors} />
+            <MetadataRow label={t('document.tags')} value={document.tags.join(', ')} colors={colors} />
+            <MetadataRow label={t('document.note')} value={document.note} colors={colors} />
             {Object.entries(document.structuredFields ?? {}).map(([field, value]) => (
               <MetadataRow
                 key={field}
-                label={structuredFieldLabels[field] ?? field}
+                label={structuredFieldLabel(field)}
                 value={value}
                 colors={colors}
               />
             ))}
             <MetadataRow
-              label="Lokale OCR"
+              label={t('document.localOcr')}
               value={
                 document.ocrText
-                  ? `${document.ocrText.length} Zeichen erkannt${
+                  ? `${t('document.ocrRecognized', { count: document.ocrText.length })}${
                       document.analysisUncertainFields?.length
-                        ? ` · ${document.analysisUncertainFields.length} unsichere Felder geprüft`
+                         ? ` · ${t('document.uncertainFieldsReviewed', { count: document.analysisUncertainFields.length })}`
                         : ''
                     }`
                   : undefined
@@ -298,6 +406,11 @@ export default function SavedDocumentDetailScreen() {
               colors={colors}
             />
           </View>
+          <Text style={[styles.sectionTitle, { color: colors.navy, marginTop: 24 }]}>{t('timeline.title')}</Text>
+          <View style={[styles.metadataCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            {documentTimeline(document.id).map((event) => <View key={event.id} style={[styles.metadataRow, { borderBottomColor: colors.border }]}><Text style={[styles.metadataValue, { color: colors.navy }]}>{t(event.titleKey as TranslationKey)}</Text><Text style={[styles.metadataLabel, { color: colors.mutedForeground }]}>{date(event.timestamp)}{event.confidence ? ` · ${event.confidence}` : ''}</Text></View>)}
+          </View>
+           {document.ocrText ? <View style={[styles.metadataCard, { backgroundColor: colors.card, borderColor: colors.border, marginTop: 12 }]}><Pressable onPress={() => setShowOcr(!showOcr)} style={styles.metadataRow}><Text style={[styles.metadataValue, { color: colors.navy }]}>{t('document.ocrText')} · {showOcr ? t('common.close') : t('common.open')}</Text></Pressable>{showOcr ? <Text style={[styles.metadataValue, { color: colors.navy, paddingBottom: 14 }]}>{document.ocrText}</Text> : null}</View> : null}
         </View>
       </ScrollView>
 
@@ -308,7 +421,7 @@ export default function SavedDocumentDetailScreen() {
             <Pressable
               onPress={() => setFullScreen(false)}
               style={[styles.closeButton, { backgroundColor: colors.navy }]}
-              accessibilityLabel="Vollbild schließen"
+              accessibilityLabel={t('common.close')}
               testID="close-fullscreen-preview"
             >
               <Feather name="x" size={20} color={colors.white} />
@@ -316,6 +429,16 @@ export default function SavedDocumentDetailScreen() {
           </View>
           <View style={styles.modalPreview}>{preview}</View>
         </View>
+      </Modal>
+      <Modal visible={editing} animationType="slide" onRequestClose={() => setEditing(false)}>
+        <ScrollView style={[styles.modal, { backgroundColor: colors.background }]} contentContainerStyle={{ paddingTop: Platform.OS === 'web' ? 24 : insets.top + 14, paddingBottom: 36 }}>
+          <View style={styles.modalHeader}><Text style={[styles.modalTitle, { color: colors.navy }]}>{t('document.edit')}</Text><Pressable onPress={() => setEditing(false)} style={[styles.closeButton, { backgroundColor: colors.navy }]}><Feather name="x" size={20} color={colors.white}/></Pressable></View>
+          {([['title',t('document.title')],['sender',t('document.sender')],['documentType',t('document.type')],['documentDate',t('document.date')],['receivedDate',t('archive.receivedDate')],['relevantPeriodStart',`${t('archive.relevantPeriod')} –`],['relevantPeriodEnd',`${t('archive.relevantPeriod')} +`],['archiveYear',t('archive.archiveYear')],['dueDate',t('document.dueDate')],['amount',t('document.amount')],['tags',t('document.tagsHint')],['note',t('document.note')]] as const).map(([key,label]) => <View key={key}><Text style={[styles.metadataLabel,{color:colors.navy}]}>{label}</Text><TextInput value={edit[key]} onChangeText={(value) => setEdit((current) => ({ ...current, [key]: value }))} style={[styles.editInput,{color:colors.navy,backgroundColor:colors.card,borderColor:colors.border}]} /></View>)}
+          <Text style={[styles.metadataLabel,{color:colors.navy}]}>{t('document.category')}</Text><View style={styles.editChips}>{GENERAL_CATEGORIES.map((category) => <Pressable key={category} onPress={() => setEdit((current) => ({...current,category}))} style={[styles.editChip,{backgroundColor:edit.category===category?colors.coral:colors.card}]}><Text style={{color:edit.category===category?colors.white:colors.navy,fontSize:10}}>{category}</Text></Pressable>)}</View>
+          <Text style={[styles.metadataLabel,{color:colors.navy}]}>{t('common.status')}</Text><View style={styles.editChips}>{DOCUMENT_STATUSES.map((status) => <Pressable key={status} onPress={() => setEdit((current) => ({...current,status}))} style={[styles.editChip,{backgroundColor:edit.status===status?colors.navy:colors.card}]}><Text style={{color:edit.status===status?colors.white:colors.navy,fontSize:10}}>{documentStatusLabel(status, language)}</Text></Pressable>)}</View>
+          <Text style={[styles.metadataLabel,{color:colors.navy}]}>{t('document.assignedProfiles')}</Text><View style={styles.editChips}>{profiles.map((profile) => <Pressable key={profile.id} onPress={() => setEdit((current) => ({...current,profileIds:current.profileIds.includes(profile.id)?current.profileIds.filter((id)=>id!==profile.id):[...current.profileIds,profile.id]}))} style={[styles.editChip,{backgroundColor:edit.profileIds.includes(profile.id)?colors.sageDeep:colors.card}]}><Text style={{color:edit.profileIds.includes(profile.id)?colors.white:colors.navy,fontSize:10}}>{profile.name}</Text></Pressable>)}</View>
+          <Pressable onPress={saveEdit} style={[styles.fullScreenButton,{backgroundColor:colors.coral}]}><Text style={[styles.fullScreenText,{color:colors.white}]}>{t('document.saveChanges')}</Text></Pressable>
+        </ScrollView>
       </Modal>
     </>
   );
@@ -344,6 +467,7 @@ const styles = StyleSheet.create({
   fullScreenButton: { minHeight: 47, borderRadius: 14, marginTop: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   fullScreenText: { fontSize: 12, fontFamily: 'Inter_700Bold' },
   documentActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginBottom: 25 },
+  intelligenceSection: { marginBottom: 25 },
   actionButton: { flexGrow: 1, minWidth: '46%', minHeight: 50, borderRadius: 15, borderWidth: 1, borderColor: 'transparent', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   actionText: { fontSize: 11, fontFamily: 'Inter_700Bold' },
   sectionTitle: { fontSize: 19, fontFamily: 'Inter_700Bold', marginBottom: 12 },
@@ -362,4 +486,7 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: '#ffffff', fontSize: 12, fontFamily: 'Inter_700Bold' },
   pressed: { opacity: 0.72, transform: [{ scale: 0.985 }] },
   disabled: { opacity: 0.35 },
+  editInput: { minHeight: 46, borderWidth: 1, borderRadius: 12, paddingHorizontal: 11, marginBottom: 10, fontSize: 12, fontFamily: 'Inter_400Regular' },
+  editChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginBottom: 12 },
+  editChip: { borderRadius: 10, paddingHorizontal: 9, paddingVertical: 8 },
 });

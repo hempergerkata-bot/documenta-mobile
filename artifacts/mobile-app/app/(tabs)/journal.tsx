@@ -14,9 +14,11 @@ import { useCallback, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
+import { useTranslation } from '@/hooks/useTranslation';
 
 export default function JournalScreen() {
   const colors = useColors();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { journalEntries, addJournalEntry, removeJournalEntry } = useApp();
   const [entry, setEntry] = useState('');
@@ -46,17 +48,18 @@ export default function JournalScreen() {
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}
     >
-      <Text style={[styles.eyebrow, { color: colors.coral }]}>NAPLÓ</Text>
-      <Text style={[styles.title, { color: colors.navy }]}>Egy kis hely neked.</Text>
+      <Text style={[styles.eyebrow, { color: colors.coral }]}>{t('journal.eyebrow')}</Text>
+      <Text style={[styles.title, { color: colors.navy }]}>{t('journal.title')}</Text>
       <Text style={[styles.intro, { color: colors.mutedForeground }]}>
-        Nem kell szépen fogalmazni. Csak írd le, ami most igaz.
+        {t('journal.intro')}
       </Text>
 
       <View style={[styles.inputCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
         <TextInput
           value={entry}
           onChangeText={setEntry}
-          placeholder="Most azt érzem, hogy..."
+          placeholder={t('journal.placeholder')}
+          accessibilityLabel={t('journal.placeholder')}
           placeholderTextColor={colors.mutedForeground}
           multiline
           textAlignVertical="top"
@@ -65,11 +68,11 @@ export default function JournalScreen() {
         />
         <View style={styles.inputFooter}>
           <Text style={[styles.helper, { color: colors.mutedForeground }]}>
-            {entry.length > 0 ? `${entry.length} karakter` : 'A naplód csak a tiéd.'}
+            {entry.length > 0 ? t('journal.characters', { count: entry.length }) : t('journal.private')}
           </Text>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Bejegyzés mentése"
+            accessibilityLabel={t('journal.save')}
             testID="journal-save"
             onPress={saveEntry}
             disabled={!entry.trim()}
@@ -89,7 +92,7 @@ export default function JournalScreen() {
       </View>
 
       <View style={styles.entriesHeader}>
-        <Text style={[styles.sectionTitle, { color: colors.navy }]}>Korábbi gondolatok</Text>
+        <Text style={[styles.sectionTitle, { color: colors.navy }]}>{t('journal.previous')}</Text>
         <Text style={[styles.count, { color: colors.coral }]}>{journalEntries.length}</Text>
       </View>
 
@@ -98,9 +101,9 @@ export default function JournalScreen() {
           <View style={[styles.emptyIcon, { backgroundColor: colors.card }]}>
             <Feather name="wind" size={21} color={colors.sageDeep} />
           </View>
-          <Text style={[styles.emptyTitle, { color: colors.sageDeep }]}>Még üres.</Text>
+          <Text style={[styles.emptyTitle, { color: colors.sageDeep }]}>{t('journal.emptyTitle')}</Text>
           <Text style={[styles.emptyText, { color: colors.sageDeep }]}>
-            Az első bejegyzésed itt fog megjelenni.
+            {t('journal.emptyText')}
           </Text>
         </View>
       ) : (
@@ -109,7 +112,7 @@ export default function JournalScreen() {
             <Pressable
               key={`${item}-${index}`}
               onLongPress={() => removeJournalEntry(item)}
-              accessibilityHint="Hosszan nyomva törölhető"
+              accessibilityHint={t('journal.deleteHint')}
               style={({ pressed }) => [
                 styles.entryRow,
                 { backgroundColor: colors.card, borderColor: colors.border },

@@ -7,29 +7,31 @@ import { isLiquidGlassAvailable } from 'expo-glass-effect';
 import { Tabs } from 'expo-router';
 import { Icon, Label, NativeTabs } from 'expo-router/unstable-native-tabs';
 import { SymbolView } from 'expo-symbols';
+import { useTranslation } from '@/hooks/useTranslation';
 
 function NativeTabLayout() {
+  const { t } = useTranslation();
   return (
     <NativeTabs>
       <NativeTabs.Trigger name="index">
         <Icon sf={{ default: 'house', selected: 'house.fill' }} />
-        <Label>Start</Label>
+        <Label>{t('nav.home')}</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="documents">
         <Icon sf={{ default: 'folder', selected: 'folder.fill' }} />
-        <Label>Dokumente</Label>
+        <Label>{t('nav.documents')}</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="add">
         <Icon sf={{ default: 'plus.circle', selected: 'plus.circle.fill' }} />
-        <Label>Hinzufügen</Label>
+        <Label>{t('nav.add')}</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="search">
         <Icon sf={{ default: 'magnifyingglass', selected: 'magnifyingglass' }} />
-        <Label>Suche</Label>
+        <Label>{t('nav.search')}</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="profile">
         <Icon sf={{ default: 'person', selected: 'person.fill' }} />
-        <Label>Profil</Label>
+        <Label>{t('nav.profile')}</Label>
       </NativeTabs.Trigger>
     </NativeTabs>
   );
@@ -37,6 +39,7 @@ function NativeTabLayout() {
 
 function ClassicTabLayout() {
   const colors = useColors();
+  const { t } = useTranslation();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
   const isIOS = Platform.OS === 'ios';
@@ -77,7 +80,7 @@ function ClassicTabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Start',
+          title: t('nav.home'),
           tabBarIcon: ({ color }) =>
             isIOS ? (
               <SymbolView name="house" tintColor={color} size={22} />
@@ -89,7 +92,7 @@ function ClassicTabLayout() {
       <Tabs.Screen
         name="documents"
         options={{
-          title: 'Dokumente',
+          title: t('nav.documents'),
           tabBarIcon: ({ color }) =>
             isIOS ? (
               <SymbolView name="folder" tintColor={color} size={22} />
@@ -101,7 +104,7 @@ function ClassicTabLayout() {
       <Tabs.Screen
         name="add"
         options={{
-          title: 'Hinzufügen',
+          title: t('nav.add'),
           tabBarIcon: ({ color }) =>
             isIOS ? (
               <SymbolView name="plus.circle" tintColor={color} size={24} />
@@ -113,7 +116,7 @@ function ClassicTabLayout() {
       <Tabs.Screen
         name="search"
         options={{
-          title: 'Suche',
+          title: t('nav.search'),
           tabBarIcon: ({ color }) =>
             isIOS ? (
               <SymbolView name="magnifyingglass" tintColor={color} size={22} />
@@ -125,7 +128,7 @@ function ClassicTabLayout() {
       <Tabs.Screen
         name="profile"
         options={{
-          title: 'Profil',
+          title: t('nav.profile'),
           tabBarIcon: ({ color }) =>
             isIOS ? (
               <SymbolView name="person" tintColor={color} size={22} />

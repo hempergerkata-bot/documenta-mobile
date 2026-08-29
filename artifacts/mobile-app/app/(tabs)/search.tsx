@@ -1,71 +1,26 @@
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useApp } from '@/context/AppContext';
+import { DOCUMENT_STATUSES, useApp } from '@/context/AppContext';
+import { GENERAL_CATEGORIES, filterDocuments } from '@/utils/documentCore';
 import { useColors } from '@/hooks/useColors';
-
+import { useTranslation } from '@/hooks/useTranslation';
+import { searchEverything } from '@/utils/documentDomain';
+import { documentCategoryLabel, documentStatusLabel, documentTypeLabel } from '@/utils/localization';
 export default function SearchScreen() {
-  const colors = useColors();
-  const insets = useSafeAreaInsets();
-  const { documents } = useApp();
-  const [query, setQuery] = useState('');
-  const topInset = Platform.OS === 'web' ? 67 : insets.top;
-  const results = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return documents;
-    return documents.filter((document) =>
-      [document.title, document.sender, document.category, document.person, ...document.tags]
-        .join(' ')
-        .toLowerCase()
-        .includes(normalized),
-    );
-  }, [documents, query]);
-
-  return (
-    <ScrollView style={[styles.screen, { backgroundColor: colors.background }]} contentContainerStyle={{ paddingTop: topInset + 18, paddingBottom: Platform.OS === 'web' ? 34 : 112 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-      <View style={styles.content}>
-        <Text style={[styles.kicker, { color: colors.coral }]}>FINDEN</Text>
-        <Text style={[styles.heading, { color: colors.navy }]}>Suche</Text>
-        <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>Titel, Absender, Kategorie oder Person</Text>
-        <View style={[styles.searchBox, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Feather name="search" size={19} color={colors.mutedForeground} />
-          <TextInput value={query} onChangeText={setQuery} placeholder="Wonach suchst du?" placeholderTextColor={colors.mutedForeground} style={[styles.input, { color: colors.navy }]} autoCapitalize="none" testID="search-input" />
-          {query ? <Pressable onPress={() => setQuery('')} accessibilityLabel="Suche löschen"><Feather name="x-circle" size={18} color={colors.mutedForeground} /></Pressable> : null}
-        </View>
-        <Text style={[styles.resultCount, { color: colors.mutedForeground }]}>{results.length} {results.length === 1 ? 'Dokument' : 'Dokumente'}</Text>
-        <View style={styles.results}>
-          {results.map((document) => (
-            <Pressable key={document.id} onPress={() => router.push({ pathname: '/document/[id]', params: { id: document.id } })} style={({ pressed }) => [styles.resultRow, { backgroundColor: colors.card, borderColor: colors.border }, pressed && styles.pressed]}>
-              <View style={[styles.resultIcon, { backgroundColor: colors.coralSoft }]}><Feather name="file-text" size={17} color={colors.coral} /></View>
-              <View style={styles.resultCopy}>
-                <Text style={[styles.resultTitle, { color: colors.navy }]} numberOfLines={1}>{document.title}</Text>
-                <Text style={[styles.resultSender, { color: colors.mutedForeground }]} numberOfLines={1}>{document.sender} · {document.person}</Text>
-              </View>
-              <Feather name="chevron-right" size={17} color={colors.mutedForeground} />
-            </Pressable>
-          ))}
-        </View>
-      </View>
-    </ScrollView>
-  );
+  const c=useColors(); const inset=useSafeAreaInsets(); const { t, number, language }=useTranslation(); const {activeDocuments:documents,profiles,activeCases:cases,activeTasks:tasks}=useApp();
+ const [query,setQuery]=useState(''); const [profile,setProfile]=useState(''); const [category,setCategory]=useState(''); const [type,setType]=useState(''); const [status,setStatus]=useState(''); const [dateFrom,setDateFrom]=useState(''); const [dateTo,setDateTo]=useState(''); const [min,setMin]=useState(''); const [max,setMax]=useState(''); const [tags,setTags]=useState('');
+ const enriched=documents.map(d=>({...d,profileIds:d.profileIds,person:[...new Set([d.person,...(d.profileIds??[]).map(id=>profiles.find(p=>p.id===id)?.name??'')])].join(' ')}));
+ const results=useMemo(()=>filterDocuments(enriched,{query,profiles:profile?[profile]:undefined,category:category||undefined,documentType:type||undefined,status:status||undefined,dateFrom:dateFrom||undefined,dateTo:dateTo||undefined,minAmount:min?Number(min):undefined,maxAmount:max?Number(max):undefined,tags:tags?tags.split(',').map(x=>x.trim()).filter(Boolean):undefined}),[enriched,query,profile,category,type,status,dateFrom,dateTo,min,max,tags]);
+ const clear=()=>{setQuery('');setProfile('');setCategory('');setType('');setStatus('');setDateFrom('');setDateTo('');setMin('');setMax('');setTags('');};
+ const types=[...new Set(documents.map(d=>d.documentType))];
+  const global=useMemo(()=>searchEverything(documents,cases,tasks,query),[documents,cases,tasks,query]);
+  const Chips=({items,value,set,labels,labelFor}:{items:readonly string[];value:string;set:(v:string)=>void;labels?:Record<string,string>;labelFor?:(v:string)=>string})=><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>{['',...items].map(item=>{const label=item?(labels?.[item]??labelFor?.(item)??item):t('documents.all');return <Pressable accessibilityRole="button" accessibilityLabel={label} key={item || 'all'} onPress={()=>set(item)} style={[s.chip,{backgroundColor:value===item?c.navy:c.card,borderColor:c.border}]}><Text style={[s.chipText,{color:value===item?c.white:c.navy}]}>{label}</Text></Pressable>;})}</ScrollView>;
+  return <ScrollView style={[s.screen,{backgroundColor:c.background}]} contentContainerStyle={[s.page,{paddingTop:inset.top+18}]}><Text style={[s.kicker,{color:c.coral}]}>DOCUMENTA</Text><Text style={[s.title,{color:c.navy}]}>{t('search.title')}</Text><View style={[s.search,{backgroundColor:c.card,borderColor:c.border}]}><Feather name="search" size={18} color={c.mutedForeground}/><TextInput accessibilityLabel={t('search.placeholder')} value={query} onChangeText={setQuery} placeholder={t('search.placeholder')} placeholderTextColor={c.mutedForeground} style={[s.flex,{color:c.navy}]}/></View><Pressable accessibilityRole="button" accessibilityLabel={t('search.clear')} onPress={clear}><Text style={[s.clear,{color:c.coral}]}>{t('search.clear')}</Text></Pressable>
+   <Text style={[s.label,{color:c.navy}]}>{t('search.profile')}</Text><Chips items={profiles.map(p=>p.id)} labels={Object.fromEntries(profiles.map(p=>[p.id,p.name]))} value={profile} set={setProfile}/><Text style={[s.label,{color:c.navy}]}>{t('search.category')}</Text><Chips items={GENERAL_CATEGORIES} value={category} set={setCategory} labelFor={(v)=>documentCategoryLabel(v,language)}/><Text style={[s.label,{color:c.navy}]}>{t('search.type')}</Text><Chips items={types} value={type} set={setType} labelFor={(v)=>documentTypeLabel(v,language)}/><Text style={[s.label,{color:c.navy}]}>{t('common.status')}</Text><Chips items={DOCUMENT_STATUSES} value={status} set={setStatus} labelFor={(v)=>documentStatusLabel(v,language)}/>
+  <View style={s.row}><TextInput value={dateFrom} onChangeText={setDateFrom} placeholder={t('document.date')} placeholderTextColor={c.mutedForeground} style={[s.input,{color:c.navy,borderColor:c.border}]}/><TextInput value={dateTo} onChangeText={setDateTo} placeholder={t('document.date')} placeholderTextColor={c.mutedForeground} style={[s.input,{color:c.navy,borderColor:c.border}]}/></View><View style={s.row}><TextInput value={min} onChangeText={setMin} placeholder={t('document.amount')} keyboardType="decimal-pad" placeholderTextColor={c.mutedForeground} style={[s.input,{color:c.navy,borderColor:c.border}]}/><TextInput value={max} onChangeText={setMax} placeholder={t('document.amount')} keyboardType="decimal-pad" placeholderTextColor={c.mutedForeground} style={[s.input,{color:c.navy,borderColor:c.border}]}/></View><TextInput value={tags} onChangeText={setTags} placeholder={t('document.tags')} placeholderTextColor={c.mutedForeground} style={[s.tags,{color:c.navy,borderColor:c.border}]}/>
+   <Text style={[s.count,{color:c.mutedForeground}]}>{t('search.count',{documents:number(results.length),cases:number(global.cases.length),tasks:number(global.tasks.length)})}</Text>{results.map(d=><Pressable accessibilityRole="button" accessibilityLabel={d.title} key={d.id} onPress={()=>router.push({pathname:'/document/[id]',params:{id:d.id}})} style={[s.result,{backgroundColor:c.card,borderColor:c.border}]}><Text style={[s.resultTitle,{color:c.navy}]}>{d.title}</Text><Text style={[s.resultMeta,{color:c.mutedForeground}]}>{d.sender} · {d.person}</Text></Pressable>)}{global.cases.map(item=><Pressable accessibilityRole="button" accessibilityLabel={item.title} key={item.id} onPress={()=>router.push({pathname:'/cases/[id]',params:{id:item.id}})} style={[s.result,{backgroundColor:c.card,borderColor:c.border}]}><Text style={[s.resultTitle,{color:c.navy}]}>{t('common.cases')} · {item.title}</Text></Pressable>)}{global.tasks.map(item=><Pressable accessibilityRole="button" accessibilityLabel={item.title} key={item.id} onPress={()=>router.push('/tasks')} style={[s.result,{backgroundColor:c.card,borderColor:c.border}]}><Text style={[s.resultTitle,{color:c.navy}]}>{t('common.tasks')} · {item.title}</Text></Pressable>)}</ScrollView>;
 }
-
-const styles = StyleSheet.create({
-  screen: { flex: 1 },
-  content: { paddingHorizontal: 20 },
-  kicker: { fontSize: 11, fontFamily: 'Inter_700Bold', letterSpacing: 2, marginBottom: 7 },
-  heading: { fontSize: 30, fontFamily: 'Inter_700Bold', letterSpacing: -0.8 },
-  subtitle: { fontSize: 13, fontFamily: 'Inter_400Regular', marginTop: 5, marginBottom: 24 },
-  searchBox: { minHeight: 55, borderWidth: 1, borderRadius: 17, paddingHorizontal: 15, flexDirection: 'row', alignItems: 'center', gap: 11 },
-  input: { flex: 1, fontSize: 14, fontFamily: 'Inter_400Regular' },
-  resultCount: { fontSize: 11, fontFamily: 'Inter_500Medium', marginTop: 17, marginBottom: 10 },
-  results: { gap: 9 },
-  resultRow: { minHeight: 69, borderWidth: 1, borderRadius: 17, padding: 11, flexDirection: 'row', alignItems: 'center' },
-  resultIcon: { width: 42, height: 42, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  resultCopy: { flex: 1, marginHorizontal: 11 },
-  resultTitle: { fontSize: 12, fontFamily: 'Inter_700Bold', marginBottom: 5 },
-  resultSender: { fontSize: 10, fontFamily: 'Inter_400Regular' },
-  pressed: { opacity: 0.72, transform: [{ scale: 0.985 }] },
-});
+const s=StyleSheet.create({screen:{flex:1},page:{padding:20,paddingBottom:110,gap:9},kicker:{fontSize:10,fontFamily:'Inter_700Bold',letterSpacing:2},title:{fontSize:29,fontFamily:'Inter_700Bold'},search:{borderWidth:1,borderRadius:14,paddingHorizontal:12,minHeight:50,flexDirection:'row',alignItems:'center',gap:8},flex:{flex:1,fontFamily:'Inter_400Regular'},clear:{fontSize:11,fontFamily:'Inter_700Bold',textAlign:'right'},label:{fontSize:11,fontFamily:'Inter_700Bold',marginTop:5},chips:{gap:7,paddingVertical:2},chip:{borderWidth:1,borderRadius:10,paddingHorizontal:9,paddingVertical:7},chipText:{fontSize:10,fontFamily:'Inter_600SemiBold'},row:{flexDirection:'row',gap:8},input:{flex:1,borderWidth:1,borderRadius:12,padding:11,fontSize:11},tags:{borderWidth:1,borderRadius:12,padding:11,fontSize:11},count:{fontSize:11,fontFamily:'Inter_500Medium',marginTop:6},result:{borderWidth:1,borderRadius:15,padding:12},resultTitle:{fontSize:12,fontFamily:'Inter_700Bold'},resultMeta:{fontSize:10,fontFamily:'Inter_400Regular',marginTop:4}});

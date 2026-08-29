@@ -1,7 +1,12 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import { copyAsync } from 'expo-file-system/legacy';
 import { PDFDocument } from 'pdf-lib/cjs/index.js';
-import { enhanceScanPage } from '@/utils/scanImageEnhancement';
+import { reconstructScanPage } from '@/utils/scanImageEnhancement';
+import {
+  selectPageVariant,
+  type DocumentVariant,
+  type ReconstructionDiagnostics,
+} from '@/utils/documentReconstruction';
 import {
   MAX_ENHANCED_IMAGE_BYTES,
   MAX_SCAN_PAGES,
@@ -19,6 +24,7 @@ function getImageExtension(uri: string) {
 export async function createPersistentScannedDocument(
   pageUris: string[],
   documentId: string,
+  selectedVariant: DocumentVariant = 'clean',
 ) {
   if (pageUris.length === 0) {
     throw new Error('Es wurde keine gescannte Seite gefunden.');
@@ -32,13 +38,16 @@ export async function createPersistentScannedDocument(
   const directory = new Directory(Paths.document, 'documenta');
   directory.create({ intermediates: true, idempotent: true });
   const persistentPageUris: string[] = [];
+  const persistentBlackWhitePageUris: string[] = [];
   const persistentOriginalPageUris: string[] = [];
   const persistentPageFiles: File[] = [];
+  const persistentBlackWhitePageFiles: File[] = [];
   const persistentOriginalPageFiles: File[] = [];
   const temporarySourceFiles: File[] = [];
   const pdfFile = new File(directory, `${documentId}.pdf`);
   const pdf = await PDFDocument.create();
   let enhancedImageBytes = 0;
+  const diagnostics: ReconstructionDiagnostics[] = [];
   pdf.setTitle('Documenta Scan');
   pdf.setCreator('Documenta');
 
@@ -50,8 +59,10 @@ export async function createPersistentScannedDocument(
         `${documentId}-original-page-${index + 1}.${extension}`,
       );
       const pageFile = new File(directory, `${documentId}-page-${index + 1}.jpg`);
+      const blackWhitePageFile = new File(directory, `${documentId}-black-white-page-${index + 1}.jpg`);
       if (originalPageFile.exists) originalPageFile.delete();
       if (pageFile.exists) pageFile.delete();
+      if (blackWhitePageFile.exists) blackWhitePageFile.delete();
 
       const normalizedSourceUri = normalizeFileUri(pageUri);
       await copyAsync({ from: normalizedSourceUri, to: originalPageFile.uri });
@@ -60,12 +71,24 @@ export async function createPersistentScannedDocument(
       }
       persistentOriginalPageFiles.push(originalPageFile);
       persistentPageFiles.push(pageFile);
-      await enhanceScanPage(originalPageFile.uri, pageFile.uri);
-      if (!pageFile.exists) {
+      persistentBlackWhitePageFiles.push(blackWhitePageFile);
+      const reconstruction = await reconstructScanPage(
+        originalPageFile.uri,
+        pageFile.uri,
+        blackWhitePageFile.uri,
+      );
+      diagnostics.push(reconstruction.diagnostics);
+      if (!pageFile.exists || !blackWhitePageFile.exists) {
         throw new Error(`Die verbesserte Seite ${index + 1} konnte nicht gespeichert werden.`);
       }
 
-      const bytes = await pageFile.bytes();
+      const selectedFile = selectPageVariant(
+        selectedVariant,
+        [originalPageFile],
+        [pageFile],
+        [blackWhitePageFile],
+      )[0];
+      const bytes = await selectedFile.bytes();
       enhancedImageBytes += bytes.length;
       if (enhancedImageBytes > MAX_ENHANCED_IMAGE_BYTES) {
         throw new Error(
@@ -86,6 +109,7 @@ export async function createPersistentScannedDocument(
         height,
       });
       persistentPageUris.push(pageFile.uri);
+      persistentBlackWhitePageUris.push(blackWhitePageFile.uri);
       persistentOriginalPageUris.push(originalPageFile.uri);
       if (normalizedSourceUri.startsWith('file://')) {
         temporarySourceFiles.push(new File(normalizedSourceUri));
@@ -101,12 +125,22 @@ export async function createPersistentScannedDocument(
     deleteFilesBestEffort(temporarySourceFiles);
     return {
       pdfUri: pdfFile.uri,
-      pageUris: persistentPageUris,
+      pageUris: selectPageVariant(
+        selectedVariant,
+        persistentOriginalPageUris,
+        persistentPageUris,
+        persistentBlackWhitePageUris,
+      ),
       originalPageUris: persistentOriginalPageUris,
+      cleanPageUris: persistentPageUris,
+      blackWhitePageUris: persistentBlackWhitePageUris,
+      selectedVariant,
+      diagnostics,
     };
   } catch (error) {
     deleteFilesBestEffort([
       ...persistentPageFiles,
+      ...persistentBlackWhitePageFiles,
       ...persistentOriginalPageFiles,
       pdfFile,
     ]);
@@ -126,8 +160,10 @@ export function deletePersistentScannedDocument(
   pdfUri?: string,
   pageUris: string[] = [],
   originalPageUris: string[] = [],
+  blackWhitePageUris: string[] = [],
+  cleanPageUris: string[] = [],
 ) {
-  const uris = [pdfUri, ...pageUris, ...originalPageUris].filter(
+  const uris = [...new Set([pdfUri, ...pageUris, ...originalPageUris, ...blackWhitePageUris, ...cleanPageUris])].filter(
     (uri): uri is string => !!uri && uri.startsWith(Paths.document.uri),
   );
   deleteFilesBestEffort(uris.map((uri) => new File(uri)));
