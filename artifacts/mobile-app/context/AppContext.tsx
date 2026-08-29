@@ -1,3 +1,36 @@
+ision(parsed.searchIndexVersion === SEARCH_INDEX_VERSION ? (parsed.searchIndexRevision ?? 0) : 1);
+         setSearchIndexRebuiltAt(parsed.searchIndexVersion === SEARCH_INDEX_VERSION ? parsed.searchIndexRebuiltAt : new Date().toISOString());
+          setIntegrations(migrateIntegrationState(parsed.integrations));
+          setBackup({ ...defaultBackupState(), ...parsed.backup, accounts: parsed.backup?.accounts ?? [], snapshots: parsed.backup?.snapshots ?? [], automatic: { ...defaultBackupState().automatic, ...parsed.backup?.automatic }, audit: parsed.backup?.audit ?? [] });
+        if (parsed.profiles) setProfiles(loadedProfiles);
+        if (parsed.tasks) setTasks(parsed.tasks);
+        if (parsed.settings) setSettings(migrateSettings(parsed.settings));
+         setDomain({ ...blankCaseState, cases: parsed.cases ?? [], relationships: parsed.relationships ?? [], notifications: parsed.notifications ?? [], activities: parsed.activities ?? [], exportPackages: parsed.exportPackages ?? [], security: { ...defaultSecurity, ...parsed.security, permissions: { ...defaultSecurity.permissions, ...parsed.security?.permissions } }, onboarding: parsed.onboarding ?? { ...blankCaseState.onboarding, completed: true }, family: parsed.family ?? blankCaseState.family, business: parsed.business ?? blankCaseState.business, contracts: parsed.contracts ?? [], recurringCosts: parsed.recurringCosts ?? [], demoEnabled: parsed.demoEnabled ?? false });
+         setDomain(current=>({...current,compareRecords:parsed.compareRecords??[]}));
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (mounted) setHydrated(true);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated || nativeRecoveryStarted.current) return;
+    nativeRecoveryStarted.current = true;
+    const items = integrations.notificationInstances
+      .filter((item) => item.status === 'scheduled')
+      .map((item) => ({ id: item.id, title: item.title, body: item.body, scheduledFor: item.scheduledFor, target: item.documentId ? `/document/${item.documentId}` : item.actionId ? `/action/${item.actionId}` : '/notifications' }));
+    void recoverLocalNotifications(items).then(() => setIntegrations((current) => ({ ...current, lastNativeRecoveryAt: new Date().toISOString() })));
+  }, [hydrated, integrations.notificationInstances]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+     const actionEngine: ActionEngineState = { schemaVersion: ACTION_ENGINE_SCHEMA_VERSION, actions, reminders, followUps, replyDrafts, calendarCandidates, automationRules };
+       const state: StoredState = { version: CURRENT_VERSION, checkIns, journalEntries, documents, profiles, tasks, settings, actionEngine, conversations, conversationThreads, explanationStates, assistantContext, assistantMessages, searchHistory, searchIndexVersion: SEARCH_INDEX_VERSION, searchIndexRevision, searchIndexRebuiltAt, integrations, backup, ...domain };
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state)).catch(
       () => undefined,
     );
