@@ -16,7 +16,7 @@ export type TimelineEvent = { id: string; title: string; date: string; kind: 'no
 export type DocumentRelationship = { id: string; fromDocumentId: string; toDocumentId: string; kind: RelationshipKind; createdAt: string };
 export type NotificationRecord = { id: string; kind: 'frist' | 'zahlung' | 'antwort' | 'neu' | 'fehlend'; title: string; body: string; target?: string; read: boolean; createdAt: string };
 export type ActivityRecord = { id: string; type: 'dokument' | 'fall' | 'aufgabe' | 'archiv' | 'export'; message: string; createdAt: string };
-export type ExportPackage = { id: string; documentIds: string[]; recipient: string; type: 'accountant' | 'lawyer' | 'authority' | 'doctor'; format: 'PDF-package' | 'ZIP placeholder'; orderedIds: string[]; includeToc: boolean; caseName?: string; createdAt: string };
+export type ExportPackage = { id: string; documentIds: string[]; recipient: string; type: 'accountant' | 'lawyer' | 'authority' | 'doctor'; format: 'PDF-package'; orderedIds: string[]; includeToc: boolean; caseName?: string; createdAt: string };
 export type SecuritySettings = { biometricProtection: boolean; pinEnabled: boolean; sensitiveDocumentsProtection: boolean; autoLockMinutes: number; cloudSyncEnabled: boolean; gmailAccessEnabled: boolean; aiProcessingEnabled: boolean; retentionPolicy: '30 Tage' | '1 Jahr' | 'Unbegrenzt'; analyticsEnabled: boolean; localOnly: boolean; retentionDays: number; permissions: Record<'kamera' | 'dateien' | 'benachrichtigungen', 'nicht_erfragt' | 'erlaubt' | 'abgelehnt'> };
 export type OnboardingState = { completed: boolean; language: 'Deutsch' | 'English'; profileName?: string; privacyAccepted: boolean };
 export type FamilyWorkspace = { enabled: boolean; members: { id: string; name: string; role: 'Eigentümer' | 'Mitglied' | 'Lesen'; permissions: string[]; visibleDocumentIds: string[] }[]; sharedHouseholdDocumentIds: string[] };
@@ -28,7 +28,7 @@ export type CompareRecord = { id: string; documentIds: [string, string]; created
 export type DomainDocument = {
   id: string; title: string; sender: string; category: string; documentType: string; documentDate: string;
   person: string; tags: string[]; note?: string; ocrText?: string; dueDate?: string; amount?: string;
-  createdAt: string; lifecycle?: LifecycleStatus; fingerprint?: string; source?: 'camera' | 'file' | 'gmail' | 'email'; duplicateCandidateStatus?: 'none' | 'warning' | 'confirmed';
+  createdAt: string; lifecycle?: LifecycleStatus; fingerprint?: string; source?: 'camera' | 'gallery' | 'file' | 'scanner' | 'gmail' | 'email'; duplicateCandidateStatus?: 'none' | 'warning' | 'confirmed';
   intelligence?: DocumentIntelligenceResult;
 };
 export type DomainTask = { id: string; title: string; documentId: string; caseId?: string; dueDate?: string; completed: boolean; priority: 'niedrig' | 'mittel' | 'hoch'; createdAt: string };

@@ -12,6 +12,32 @@ import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/hooks/useTranslation';
 import { scanDocumentPages } from '@/utils/documentScanner';
 
+function pickWebPdf(): Promise<{ uri: string; name: string; mimeType: string } | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/pdf,.pdf';
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) {
+        resolve(null);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onerror = () => resolve(null);
+      reader.onload = () =>
+        resolve({
+          uri: String(reader.result),
+          name: file.name,
+          mimeType: file.type || 'application/pdf',
+        });
+      reader.readAsDataURL(file);
+    };
+    input.addEventListener('cancel', () => resolve(null), { once: true });
+    input.click();
+  });
+}
+
 export default function AddDocumentScreen() {
   const colors = useColors();
   const { t } = useTranslation();
@@ -70,11 +96,26 @@ export default function AddDocumentScreen() {
     });
     if (!result.canceled) {
       const selected = result.assets[0];
-      openDetails({ uri: selected.uri, name: selected.fileName ?? `${t('add.image')}.jpg`, mimeType: selected.mimeType }, 'gallery');
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      // Gallery images use the same review and local OCR pipeline as scans.
+      // Keep their source as gallery; do not relabel an import as a camera scan.
+      setPendingAsset({
+        uri: selected.uri,
+        name: selected.fileName ?? `${t('add.image')}.jpg`,
+        mimeType: selected.mimeType,
+        source: 'gallery',
+        pageUris: [selected.uri],
+      });
+      router.push('/scan-review' as never);
     }
   };
 
   const handleFile = async () => {
+    if (Platform.OS === 'web') {
+      const selected = await pickWebPdf();
+      if (selected) openDetails(selected, 'file');
+      return;
+    }
     const result = await DocumentPicker.getDocumentAsync({
       type: ['application/pdf'],
       copyToCacheDirectory: true,

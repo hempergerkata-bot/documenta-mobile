@@ -71,6 +71,15 @@ export default function DocumentDetailsScreen() {
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
   const uncertainFields = new Set(pendingAsset?.analysis?.uncertainFields ?? []);
   const unresolvedFields = new Set(pendingAsset?.analysis?.unresolvedFields ?? []);
+  const ocrPageResults = pendingAsset?.ocrPageResults ?? [];
+  const completedOcrPages = ocrPageResults.filter((page) => page.status === 'complete').length;
+  const totalOcrPages = ocrPageResults.length || pendingAsset?.pageUris?.length || 0;
+  const ocrProgressLabel =
+    totalOcrPages > 0
+      ? `${completedOcrPages}/${totalOcrPages} ${
+          totalOcrPages === 1 ? t('common.page') : t('common.pages')
+        }`
+      : '';
   const canSave =
     !!title.trim() &&
     !!category &&
@@ -133,7 +142,8 @@ export default function DocumentDetailsScreen() {
       <Text style={[styles.uncertainHint, { color: colors.coral }]}>
         {t('details.uncertainHint')}
       </Text>
-    ) : unresolvedFields.has(field) && pendingAsset?.ocrStatus === 'complete' ? (
+    ) : unresolvedFields.has(field) &&
+      (pendingAsset?.ocrStatus === 'complete' || pendingAsset?.ocrStatus === 'partial') ? (
       <Text style={[styles.unresolvedHint, { color: colors.mutedForeground }]}>
         {t('details.unresolvedHint')}
       </Text>
@@ -223,6 +233,9 @@ export default function DocumentDetailsScreen() {
       selectedVariant: pendingAsset.selectedVariant,
       reconstructionDiagnostics: pendingAsset.reconstructionDiagnostics,
       ocrText: pendingAsset.analysis?.text || undefined,
+      ocrStatus: pendingAsset.ocrStatus,
+      ocrPageResults: pendingAsset.ocrPageResults,
+      source: pendingAsset.source,
       analysisUncertainFields: pendingAsset.analysis?.uncertainFields,
       structuredFields: additionalFields,
       analysisConfidenceByField: Object.fromEntries(
@@ -299,7 +312,7 @@ export default function DocumentDetailsScreen() {
           <Feather name="check-circle" size={20} color={colors.sageDeep} />
         </View>
 
-        {pendingAsset?.source === 'scanner' ? (
+        {pendingAsset?.ocrStatus ? (
           <View
             style={[
               styles.analysisCard,
@@ -307,17 +320,36 @@ export default function DocumentDetailsScreen() {
                 backgroundColor:
                   pendingAsset.ocrStatus === 'complete'
                     ? colors.sage
+                    : pendingAsset.ocrStatus === 'partial'
+                      ? colors.sun
                     : colors.coralSoft,
               },
             ]}
             testID="ocr-analysis-status"
+            accessibilityLabel={
+              pendingAsset.ocrStatus === 'partial'
+                ? `${t('details.analysisComplete')} · ${ocrProgressLabel}`
+                : pendingAsset.ocrStatus === 'complete'
+                  ? t('details.analysisComplete')
+                  : pendingAsset.ocrStatus === 'empty'
+                    ? t('details.noText')
+                    : t('details.analysisUnavailable')
+            }
           >
             <Feather
-              name={pendingAsset.ocrStatus === 'complete' ? 'cpu' : 'alert-circle'}
+              name={
+                pendingAsset.ocrStatus === 'complete'
+                  ? 'cpu'
+                  : pendingAsset.ocrStatus === 'partial'
+                    ? 'alert-triangle'
+                    : 'alert-circle'
+              }
               size={18}
               color={
                 pendingAsset.ocrStatus === 'complete'
                   ? colors.sageDeep
+                  : pendingAsset.ocrStatus === 'partial'
+                    ? colors.accentForeground
                   : colors.coral
               }
             />
@@ -329,12 +361,21 @@ export default function DocumentDetailsScreen() {
                     color:
                       pendingAsset.ocrStatus === 'complete'
                         ? colors.sageDeep
+                        : pendingAsset.ocrStatus === 'partial'
+                          ? colors.accentForeground
                         : colors.navy,
                   },
                 ]}
+                testID={
+                  pendingAsset.ocrStatus === 'partial'
+                    ? 'ocr-analysis-partial'
+                    : undefined
+                }
               >
                 {pendingAsset.ocrStatus === 'complete'
                   ? t('details.analysisComplete')
+                  : pendingAsset.ocrStatus === 'partial'
+                    ? `${t('details.analysisComplete')} · ${ocrProgressLabel}`
                   : pendingAsset.ocrStatus === 'empty'
                     ? t('details.noText')
                     : t('details.analysisUnavailable')}
@@ -346,15 +387,51 @@ export default function DocumentDetailsScreen() {
                     color:
                       pendingAsset.ocrStatus === 'complete'
                         ? colors.sageDeep
+                        : pendingAsset.ocrStatus === 'partial'
+                          ? colors.accentForeground
                         : colors.mutedForeground,
                   },
                 ]}
               >
-                {pendingAsset.ocrStatus === 'complete'
+                {pendingAsset.ocrStatus === 'complete' ||
+                pendingAsset.ocrStatus === 'partial'
                   ? t('details.analysisCompleteText')
                   : t('details.analysisManualText')}
               </Text>
             </View>
+          </View>
+        ) : null}
+        {pendingAsset?.ocrPageResults?.length ? (
+          <View style={styles.ocrPageStatuses} testID="ocr-page-statuses">
+            {pendingAsset.ocrPageResults.map((page) => {
+              const label =
+                page.status === 'complete'
+                  ? t('details.analysisComplete')
+                  : page.status === 'empty'
+                    ? t('details.noText')
+                    : t('details.analysisUnavailable');
+              return (
+                <View
+                  key={page.pageIndex}
+                  accessibilityLabel={`${page.pageIndex + 1}/${totalOcrPages} ${label}`}
+                  style={[
+                    styles.ocrPageStatus,
+                    {
+                      backgroundColor:
+                        page.status === 'complete'
+                          ? colors.sage
+                          : page.status === 'empty'
+                            ? colors.coralSoft
+                            : colors.muted,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.ocrPageStatusText, { color: colors.navy }]}>
+                    {page.pageIndex + 1}
+                  </Text>
+                </View>
+              );
+            })}
           </View>
         ) : null}
 
@@ -527,6 +604,9 @@ const styles = StyleSheet.create({
   analysisCopy: { flex: 1, marginLeft: 10 },
   analysisTitle: { fontSize: 12, fontFamily: 'Inter_700Bold', marginBottom: 5 },
   analysisText: { fontSize: 10, lineHeight: 15, fontFamily: 'Inter_400Regular' },
+  ocrPageStatuses: { flexDirection: 'row', gap: 7, marginTop: -14, marginBottom: 22 },
+  ocrPageStatus: { width: 24, height: 24, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  ocrPageStatusText: { fontSize: 10, fontFamily: 'Inter_700Bold' },
   sectionTitle: { fontSize: 19, fontFamily: 'Inter_700Bold' },
   sectionSubtitle: { fontSize: 11, fontFamily: 'Inter_400Regular', marginTop: 4, marginBottom: 17 },
   label: { fontSize: 12, fontFamily: 'Inter_700Bold', marginTop: 11, marginBottom: 8 },

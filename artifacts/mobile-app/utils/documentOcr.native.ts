@@ -3,39 +3,59 @@ import TextRecognition, {
 } from '@react-native-ml-kit/text-recognition';
 import {
   analyzeGermanDocumentText,
-  DocumentAnalysisResult,
 } from '@/utils/documentAnalysis';
 import { mergeComplementaryOcrText } from '@/utils/ocrTextSelection';
+import {
+  aggregateOcrPageStatus,
+  createOcrPageResult,
+  formatOcrPageText,
+  type OcrPageStatus,
+} from '@/utils/ocrPageAggregation';
+import type {
+  DocumentOcrResult,
+} from '@/utils/documentOcr';
 
-async function recognizePage(pageUri?: string) {
-  if (!pageUri) return '';
+async function recognizePage(pageUri?: string): Promise<{
+  text: string;
+  status: OcrPageStatus;
+}> {
+  if (!pageUri) return { text: '', status: 'empty' };
   try {
     const result = await TextRecognition.recognize(
       pageUri,
       TextRecognitionScript.LATIN,
     );
-    return result.text.trim();
+    const text = result.text.trim();
+    return { text, status: text ? 'complete' : 'empty' };
   } catch {
-    return '';
+    return { text: '', status: 'failed' };
   }
 }
 
 export async function recognizeAndAnalyzeDocument(
   pageUris: string[],
   originalPageUris: string[] = [],
-): Promise<DocumentAnalysisResult> {
-  const pageTexts: string[] = [];
+): Promise<DocumentOcrResult> {
+  const pageResults = [];
   for (const [pageIndex, pageUri] of pageUris.entries()) {
-    const optimizedText = await recognizePage(pageUri);
-    const originalText = await recognizePage(originalPageUris[pageIndex]);
+    const optimized = await recognizePage(pageUri);
+    const original = originalPageUris[pageIndex]
+      ? await recognizePage(originalPageUris[pageIndex])
+      : undefined;
     const selectedText = mergeComplementaryOcrText(
-      optimizedText,
-      originalText,
+      optimized.text,
+      original?.text ?? '',
     );
-
-    if (selectedText) {
-      pageTexts.push(`--- Seite ${pageIndex + 1} ---\n${selectedText}`);
-    }
+    pageResults.push(
+      createOcrPageResult(pageIndex, selectedText, [
+        optimized.status,
+        ...(original ? [original.status] : []),
+      ]),
+    );
   }
-  return analyzeGermanDocumentText(pageTexts.join('\n\n'));
+  return {
+    ...analyzeGermanDocumentText(formatOcrPageText(pageResults)),
+    ocrStatus: aggregateOcrPageStatus(pageResults),
+    pageResults,
+  };
 }

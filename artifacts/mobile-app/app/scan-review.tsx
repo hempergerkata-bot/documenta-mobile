@@ -34,6 +34,8 @@ export default function ScanReviewScreen() {
   const [error, setError] = useState('');
   const [selectedVariant, setSelectedVariant] = useState<DocumentVariant>('clean');
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
+  const source = pendingAsset?.source ?? 'scanner';
+  const isGalleryImport = source === 'gallery';
 
   const scanMore = async (replaceIndex?: number) => {
     setBusy(true);
@@ -79,7 +81,7 @@ export default function ScanReviewScreen() {
       Alert.alert(t('scan.lastPageTitle'), t('scan.lastPageText'));
       return;
     }
-    deleteTemporaryScanPages([pages[index]]);
+    if (!isGalleryImport) deleteTemporaryScanPages([pages[index]]);
     const next = pages.filter((_, pageIndex) => pageIndex !== index);
     setPages(next);
     setSelectedPage(Math.min(selectedPage, next.length - 1));
@@ -92,35 +94,65 @@ export default function ScanReviewScreen() {
     setError('');
     const documentId = `document-${Date.now()}`;
     try {
-      const result = await createPersistentScannedDocument(pages, documentId, selectedVariant);
-      setBusyLabel(t('scan.recognizing'));
-      let analysis;
-      let ocrStatus: 'complete' | 'empty' | 'failed' = 'failed';
-      try {
-        analysis = await recognizeAndAnalyzeDocument(
+      if (!isGalleryImport) {
+        const result = await createPersistentScannedDocument(pages, documentId, selectedVariant);
+        setBusyLabel(t('scan.recognizing'));
+        const analysis = await recognizeAndAnalyzeDocument(
           result.pageUris,
           result.originalPageUris,
         );
-        ocrStatus = analysis.text ? 'complete' : 'empty';
-      } catch {
-        ocrStatus = 'failed';
+        setPendingAsset({
+          uri: result.pdfUri,
+          pdfUri: result.pdfUri,
+          pageUris: result.pageUris,
+          originalPageUris: result.originalPageUris,
+          cleanPageUris: result.cleanPageUris,
+          blackWhitePageUris: result.blackWhitePageUris,
+          selectedVariant: result.selectedVariant,
+          reconstructionDiagnostics: result.diagnostics,
+          name: `Documenta Scan · ${pages.length} ${pages.length === 1 ? t('common.page') : t('common.pages')}`,
+          mimeType: 'application/pdf',
+          source: 'scanner',
+          documentId,
+          analysis,
+          ocrStatus: analysis.ocrStatus,
+          ocrPageResults: analysis.pageResults,
+        });
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        router.replace('/document-details');
+        return;
       }
-      setPendingAsset({
-        uri: result.pdfUri,
-        pdfUri: result.pdfUri,
-        pageUris: result.pageUris,
-        originalPageUris: result.originalPageUris,
-        cleanPageUris: result.cleanPageUris,
-        blackWhitePageUris: result.blackWhitePageUris,
-        selectedVariant: result.selectedVariant,
-        reconstructionDiagnostics: result.diagnostics,
-        name: `Documenta Scan · ${pages.length} ${pages.length === 1 ? t('common.page') : t('common.pages')}`,
-        mimeType: 'application/pdf',
-        source: 'scanner',
-        documentId,
-        analysis,
-        ocrStatus,
-      });
+
+      setBusyLabel(t('scan.recognizing'));
+      try {
+        const analysis = await recognizeAndAnalyzeDocument(pages);
+        setPendingAsset({
+          uri: pendingAsset?.uri ?? pages[0],
+          name: pendingAsset?.name ?? `${t('add.image')}.jpg`,
+          mimeType: pendingAsset?.mimeType,
+          source: 'gallery',
+          pageUris: pages,
+          analysis,
+          ocrStatus: analysis.ocrStatus,
+          ocrPageResults: analysis.pageResults,
+        });
+      } catch {
+        // A recognition failure must not prevent the user from filing a scan.
+        // The persisted page assets remain available for manual review.
+        setPendingAsset({
+          uri: pendingAsset?.uri ?? pages[0],
+          name: pendingAsset?.name ?? `${t('add.image')}.jpg`,
+          mimeType: pendingAsset?.mimeType,
+          source: 'gallery',
+          pageUris: pages,
+          ocrStatus: 'failed',
+          ocrPageResults: pages.map((_, pageIndex) => ({
+            pageIndex,
+            status: 'failed',
+            text: '',
+          })),
+        });
+      }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace('/document-details');
     } catch (caught) {
@@ -131,7 +163,7 @@ export default function ScanReviewScreen() {
   };
 
   const cancel = () => {
-    deleteTemporaryScanPages(pages);
+    if (!isGalleryImport) deleteTemporaryScanPages(pages);
     clearPendingAsset();
     if (router.canGoBack()) {
       router.back();
@@ -176,11 +208,11 @@ export default function ScanReviewScreen() {
           <Image source={{ uri: pages[selectedPage] }} style={styles.previewImage} resizeMode="contain" testID="scan-page-preview" />
           <View style={[styles.enhancedBadge, { backgroundColor: colors.navy }]}>
             <Feather name="check-circle" size={13} color={colors.white} />
-            <Text style={[styles.enhancedText, { color: colors.white }]}>{t('scan.processed')}</Text>
+            <Text style={[styles.enhancedText, { color: colors.white }]}>{isGalleryImport ? t('details.assetReady') : t('scan.processed')}</Text>
           </View>
         </View>
 
-        <View style={[styles.variantCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        {!isGalleryImport ? <View style={[styles.variantCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <Text style={[styles.variantTitle, { color: colors.navy }]}>{t('scan.variantTitle')}</Text>
           <Text style={[styles.variantHint, { color: colors.muted }]}>{t('scan.variantHint')}</Text>
           <View style={styles.variantRow}>
@@ -204,7 +236,7 @@ export default function ScanReviewScreen() {
               </Pressable>
             ))}
           </View>
-        </View>
+        </View> : null}
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.thumbnailList}>
           {pages.map((page, index) => (
@@ -222,7 +254,7 @@ export default function ScanReviewScreen() {
           ))}
         </ScrollView>
 
-        <View style={styles.actionRow}>
+        {!isGalleryImport ? <View style={styles.actionRow}>
           <Pressable disabled={busy} onPress={() => void scanMore(selectedPage)} style={[styles.secondaryAction, { backgroundColor: colors.card, borderColor: colors.border }, busy && styles.disabled]} testID="rescan-page-button">
             <Feather name="crop" size={17} color={colors.navy} />
             <Text style={[styles.secondaryText, { color: colors.navy }]}>{t('scan.rescan')}</Text>
@@ -231,27 +263,27 @@ export default function ScanReviewScreen() {
             <Feather name="trash-2" size={17} color={colors.coral} />
             <Text style={[styles.secondaryText, { color: colors.coral }]}>{t('scan.remove')}</Text>
           </Pressable>
-        </View>
+        </View> : null}
 
-        <View style={[styles.qualityCard, { backgroundColor: colors.sage }]}>
+        {!isGalleryImport ? <View style={[styles.qualityCard, { backgroundColor: colors.sage }]}>
           <Feather name="maximize" size={17} color={colors.sageDeep} />
           <View style={styles.qualityCopy}>
             <Text style={[styles.qualityTitle, { color: colors.sageDeep }]}>{t('scan.nativeTitle')}</Text>
             <Text style={[styles.qualityText, { color: colors.sageDeep }]}>{t('scan.nativeText', { count: MAX_SCAN_PAGES })}</Text>
           </View>
-        </View>
+        </View> : null}
 
         {error ? <Text style={[styles.error, { color: colors.coral }]}>{error}</Text> : null}
 
-        <Pressable disabled={busy} onPress={() => void scanMore()} style={[styles.addPageButton, { borderColor: colors.coral }, busy && styles.disabled]} testID="add-scan-page-button">
+        {!isGalleryImport ? <Pressable disabled={busy} onPress={() => void scanMore()} style={[styles.addPageButton, { borderColor: colors.coral }, busy && styles.disabled]} testID="add-scan-page-button">
           <Feather name="plus" size={19} color={colors.coral} />
           <Text style={[styles.addPageText, { color: colors.coral }]}>{t('scan.addPage')}</Text>
-        </Pressable>
+        </Pressable> : null}
 
         <Pressable disabled={busy} onPress={() => void createPdf()} style={[styles.createButton, { backgroundColor: busy ? colors.muted : colors.coral }]} testID="create-scan-pdf-button">
           <View>
-            <Text style={[styles.createTitle, { color: colors.white }]}>{busy ? busyLabel || t('scan.creating') : t('scan.create')}</Text>
-            <Text style={[styles.createSubtitle, { color: colors.white }]}>{t('scan.createSubtitle', { count: pages.length, pages: pages.length === 1 ? t('common.page') : t('common.pages'), variant: selectedVariant === 'clean' ? t('scan.clean') : selectedVariant === 'blackWhite' ? t('scan.blackWhite') : t('scan.original') })}</Text>
+            <Text style={[styles.createTitle, { color: colors.white }]}>{busy ? busyLabel || t('scan.creating') : isGalleryImport ? t('details.assetReady') : t('scan.create')}</Text>
+            {!isGalleryImport ? <Text style={[styles.createSubtitle, { color: colors.white }]}>{t('scan.createSubtitle', { count: pages.length, pages: pages.length === 1 ? t('common.page') : t('common.pages'), variant: selectedVariant === 'clean' ? t('scan.clean') : selectedVariant === 'blackWhite' ? t('scan.blackWhite') : t('scan.original') })}</Text> : null}
           </View>
           <Feather name="arrow-right" size={20} color={colors.white} />
         </Pressable>

@@ -29,7 +29,7 @@ export default function SecurityScreen() {
   };
   const toggles: [keyof typeof security, Parameters<typeof t>[0]][] = [['biometricProtection', 'security.biometric'], ['pinEnabled', 'security.pin'], ['sensitiveDocumentsProtection', 'security.sensitive'], ['cloudSyncEnabled', 'security.cloud'], ['gmailAccessEnabled', 'security.gmail'], ['aiProcessingEnabled', 'security.ai']];
   return <ScrollView style={{ flex: 1, backgroundColor: c.background }} contentContainerStyle={{ padding: 24, paddingTop: 64, gap: 12 }}>
-    <Pressable accessibilityRole="button" accessibilityLabel={t('common.back')} onPress={() => router.back()}><Text style={{ color: c.coral, textAlign }}>{backSymbol} {t('common.back')}</Text></Pressable>
+    <Pressable accessibilityRole="button" accessibilityLabel={t('common.back')} onPress={() => router.canGoBack() ? router.back() : router.replace('/profile')}><Text style={{ color: c.coral, textAlign }}>{backSymbol} {t('common.back')}</Text></Pressable>
     <Text style={{ color: c.navy, fontSize: 28, fontFamily: 'Inter_700Bold', textAlign }}>{t('security.title')}</Text>
     {toggles.map(([key, label]) => <View key={key} style={{ padding: 13, borderRadius: 13, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, flexDirection: direction === 'rtl' ? 'row-reverse' : 'row', alignItems: 'center' }}><Text style={{ color: c.navy, flex: 1, textAlign }}>{t(label)}</Text><Switch value={Boolean(security[key])} onValueChange={value => updateSecurity({ [key]: value })} /></View>)}
     <Text style={{ color: c.navy, textAlign }}>{t('security.autoLock', { count: number(security.autoLockMinutes) })}</Text><Text style={{ color: c.navy, textAlign }}>{t('security.retention', { policy: security.retentionPolicy })}</Text>

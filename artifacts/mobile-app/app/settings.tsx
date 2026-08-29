@@ -43,7 +43,7 @@ export default function SettingsScreen() {
   </View>;
   const selectedCountry = countryProfile(settings.residenceCountry);
   return <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={[styles.page, { paddingTop: (Platform.OS === 'web' ? 67 : inset.top) + 16 }]}>
-    <Pressable onPress={() => router.back()} accessibilityLabel={t('common.back')}><Text style={{ color: colors.coral, fontFamily: 'Inter_700Bold' }}>{backSymbol} {t('common.back')}</Text></Pressable>
+    <Pressable onPress={() => router.canGoBack() ? router.back() : router.replace('/profile')} accessibilityLabel={t('common.back')}><Text style={{ color: colors.coral, fontFamily: 'Inter_700Bold' }}>{backSymbol} {t('common.back')}</Text></Pressable>
     <Text style={[styles.title, { color: colors.navy }]}>{t('settings.title')}</Text>
     <View style={[styles.group, { backgroundColor: colors.card, borderColor: colors.border }]}>
       <Text style={[styles.label, { color: colors.navy }]}>{t('settings.region')}</Text>

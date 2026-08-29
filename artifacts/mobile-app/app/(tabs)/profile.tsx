@@ -11,15 +11,14 @@ import { languageName } from '@/utils/localization';
 export default function ProfileScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const [biometrics, setBiometrics] = useState(false);
   const [profileName, setProfileName] = useState('');
-  const { profiles, addProfile, renameProfile, demoEnabled, setDemoEnabled } = useApp();
+  const { profiles, addProfile, renameProfile, demoEnabled, setDemoEnabled, security, updateSecurity } = useApp();
   const { t, language } = useTranslation();
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
   const rows = [
-    { icon: 'globe', title: t('common.language'), detail: languageName(language, language), type: 'link' },
-    { icon: 'lock', title: t('onboarding.privacy'), detail: t('automation.localOnly'), type: 'link' },
-    { icon: 'help-circle', title: t('common.review'), detail: t('settings.subtitle'), type: 'link' },
+    { icon: 'globe', title: t('common.language'), detail: languageName(language, language), path: '/settings' },
+    { icon: 'lock', title: t('onboarding.privacy'), detail: t('automation.localOnly'), path: '/security' },
+    { icon: 'help-circle', title: t('common.review'), detail: t('settings.subtitle'), path: '/settings' },
   ] as const;
 
   return (
@@ -48,12 +47,12 @@ export default function ProfileScreen() {
           <View style={styles.row}>
             <View style={[styles.rowIcon, { backgroundColor: colors.sage }]}><Feather name="shield" size={17} color={colors.sageDeep} /></View>
             <View style={styles.rowCopy}><Text style={[styles.rowTitle, { color: colors.navy }]}>{t('onboarding.privacy')}</Text><Text style={[styles.rowDetail, { color: colors.mutedForeground }]}>{t('automation.localOnly')}</Text></View>
-            <Switch value={biometrics} onValueChange={setBiometrics} trackColor={{ false: colors.muted, true: colors.coral }} thumbColor={colors.white} testID="biometric-switch" />
+            <Switch value={security.biometricProtection} onValueChange={(biometricProtection) => updateSecurity({ biometricProtection })} trackColor={{ false: colors.muted, true: colors.coral }} thumbColor={colors.white} testID="biometric-switch" />
           </View>
           <View style={[styles.divider, { backgroundColor: colors.border }]} />
           {rows.map((row) => (
             <View key={row.title}>
-               <Pressable accessibilityRole="button" accessibilityLabel={row.title} style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
+                <Pressable accessibilityRole="button" accessibilityLabel={row.title} onPress={() => router.push(row.path as never)} style={({ pressed }) => [styles.row, pressed && styles.pressed]}>
                  <View style={[styles.rowIcon, { backgroundColor: row.icon === 'globe' ? colors.sun : row.icon === 'lock' ? colors.coralSoft : colors.lilac }]}><Feather name={row.icon} size={17} color={colors.navy} /></View>
                 <View style={styles.rowCopy}><Text style={[styles.rowTitle, { color: colors.navy }]}>{row.title}</Text><Text style={[styles.rowDetail, { color: colors.mutedForeground }]}>{row.detail}</Text></View>
                 <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
@@ -66,7 +65,7 @@ export default function ProfileScreen() {
           <Feather name="zap" size={16} color={colors.accentForeground} />
           <Text style={[styles.noteText, { color: colors.accentForeground }]}>{t('onboarding.modulesText')}</Text>
         </View>
-        <View style={{ gap: 9, marginTop: 14 }}>{[['/cases',t('common.cases')],['/notifications',t('action.reminders')],['/archive',t('document.archive')],['/export',t('documents.optimizedPdf')],['/activity',t('action.history')],['/contracts',t('common.documents')],['/compare',t('common.review')],['/workspaces',t('search.profile')],['/security',t('onboarding.privacy')],['/modules',t('onboarding.modules')]].map(([path,label])=><Pressable accessibilityRole="button" accessibilityLabel={label} key={path} onPress={() => router.push(path as never)} style={[styles.note,{backgroundColor:colors.card}]}><Text style={[styles.noteText,{color:colors.navy}]}>{label}</Text></Pressable>)}<View style={[styles.note,{backgroundColor:colors.sage}]}><Text style={[styles.noteText,{color:colors.sageDeep}]}>DEMO</Text><Switch accessibilityLabel="DEMO" value={demoEnabled} onValueChange={setDemoEnabled}/></View></View>
+        <View style={{ gap: 9, marginTop: 14 }}>{[['/journal',t('journal.title')],['/cases',t('common.cases')],['/notifications',t('action.reminders')],['/archive',t('document.archive')],['/export',t('documents.optimizedPdf')],['/activity',t('action.history')],['/contracts',t('common.documents')],['/compare',t('common.review')],['/workspaces',t('search.profile')],['/security',t('onboarding.privacy')],['/modules',t('onboarding.modules')]].map(([path,label])=><Pressable accessibilityRole="button" accessibilityLabel={label} key={path} onPress={() => router.push(path as never)} style={[styles.note,{backgroundColor:colors.card}]}><Text style={[styles.noteText,{color:colors.navy}]}>{label}</Text></Pressable>)}<View style={[styles.note,{backgroundColor:colors.sage}]}><Text style={[styles.noteText,{color:colors.sageDeep}]}>DEMO</Text><Switch accessibilityLabel="DEMO" value={demoEnabled} onValueChange={setDemoEnabled}/></View></View>
       </View>
     </ScrollView>
   );
