@@ -22,6 +22,16 @@
         "image": "latest"
       }
     },
+    "samsung": {
+      "node": "20.19.4",
+      "corepack": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=arm64-v8a",
+        "image": "latest"
+      }
+    },
     "production": {
       "autoIncrement": true
     }
