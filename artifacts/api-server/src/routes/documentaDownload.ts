@@ -1,25 +1,114 @@
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type RequestHandler } from "express";
 
 const router: IRouter = Router();
 
-const apkFileName = "documenta-android-development-ocr.apk";
+const apkFileName = "documenta-preview-current-main-1.0.0.apk";
+const apkSize = 353913181;
+const apkSha256 = "ee3f383febeaba3b4167c4348734ccd0e9d8136eee9715880129252da6025905";
+const buildId = "e6289353-bf0c-4e9a-bc47-423981b2398c";
+const sourceSha = "761275527397a33ac7af68d4c7dc433e5744e211";
+const maxTokenLifetimeMs = 14 * 24 * 60 * 60 * 1000;
 const apkPath = path.resolve(
   process.cwd(),
-  "../../.agents/outputs/documenta-android-development-ocr.apk",
+  "../../.agents/outputs/documenta-preview-current-main-1.0.0.apk",
 );
 
-router.get("/install/documenta", (_request, response) => {
+function signingSecret() {
+  const secret = process.env["SESSION_SECRET"];
+  if (!secret || secret.length < 32) {
+    throw new Error("SESSION_SECRET must contain at least 32 characters.");
+  }
+  return secret;
+}
+
+function expectedSignature(expiresAt: string) {
+  return createHmac("sha256", signingSecret())
+    .update(`documenta-apk:${buildId}:${expiresAt}`)
+    .digest("hex");
+}
+
+function validToken(token: string) {
+  const [expiresAt, signature, extra] = token.split(".");
+  if (!expiresAt || !signature || extra || !/^\d{13}$/.test(expiresAt) || !/^[a-f0-9]{64}$/.test(signature)) {
+    return false;
+  }
+  const expiry = Number(expiresAt);
+  const now = Date.now();
+  if (!Number.isSafeInteger(expiry) || expiry <= now || expiry - now > maxTokenLifetimeMs) {
+    return false;
+  }
+  const expected = Buffer.from(expectedSignature(expiresAt), "hex");
+  const provided = Buffer.from(signature, "hex");
+  return expected.length === provided.length && timingSafeEqual(expected, provided);
+}
+
+const requireSignedAccess: RequestHandler = (request, response, next) => {
+  const token = typeof request.query["token"] === "string" ? request.query["token"] : "";
+  if (!validToken(token)) {
+    response
+      .status(401)
+      .set({
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "X-Robots-Tag": "noindex, nofollow, noarchive",
+      })
+      .type("text")
+      .send("Érvénytelen vagy lejárt belső letöltési hivatkozás.");
+    return;
+  }
+  response.locals["documentaDownloadToken"] = token;
+  next();
+};
+
+let verifiedFileKey = "";
+
+async function verifyApkArtifact() {
+  const fileStat = await stat(apkPath);
+  const fileKey = `${fileStat.size}:${fileStat.mtimeMs}`;
+  if (verifiedFileKey === fileKey) return fileStat;
+  if (fileStat.size !== apkSize) {
+    throw new Error("A belső APK mérete nem egyezik a rögzített artifacttal.");
+  }
+  const actualSha256 = await new Promise<string>((resolve, reject) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(apkPath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+  if (actualSha256 !== apkSha256) {
+    throw new Error("A belső APK SHA-256 értéke nem egyezik a rögzített artifacttal.");
+  }
+  verifiedFileKey = fileKey;
+  return fileStat;
+}
+
+router.get("/install/documenta", requireSignedAccess, (_request, response) => {
+  const token = response.locals["documentaDownloadToken"] as string;
   response
     .status(200)
+    .set({
+      "Cache-Control": "no-store",
+      "Content-Security-Policy":
+        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "X-Robots-Tag": "noindex, nofollow, noarchive",
+    })
     .type("html")
     .send(`<!doctype html>
 <html lang="hu">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow, noarchive">
     <title>Documenta Android telepítés</title>
     <style>
       body { margin: 0; background: #f8f7f3; color: #20201d; font-family: system-ui, sans-serif; }
@@ -32,9 +121,11 @@ router.get("/install/documenta", (_request, response) => {
   <body>
     <main>
       <h1>Documenta Android APK</h1>
-      <p>A csomag tartalmazza az offline ML Kit OCR-t, a natív dokumentumszkennert és a javított PDF-képoptimalizálást.</p>
-      <a href="../downloads/${apkFileName}">APK letöltése</a>
-      <p><small>Méret: 191,78 MB. Build: a932f033-f21c-47c6-a23f-c91f47153fe3</small></p>
+      <p>Standalone belső preview build a jelenlegi main forrásból, beépített JavaScript bundle-lel. Metro, localhost és QR-kód nélkül indul.</p>
+       <a href="../downloads/${apkFileName}?token=${encodeURIComponent(token)}">APK letöltése</a>
+       <p><small>Méret: ${(apkSize / 1024 / 1024).toFixed(1)} MB. Build: ${buildId}</small></p>
+       <p><small>Forrás commit: ${sourceSha}</small></p>
+       <p><small>SHA-256: ${apkSha256}</small></p>
     </main>
   </body>
 </html>`);
@@ -42,17 +133,20 @@ router.get("/install/documenta", (_request, response) => {
 
 router.get(
   `/downloads/${apkFileName}`,
+  requireSignedAccess,
   async (request, response, next) => {
     try {
-      const fileStat = await stat(apkPath);
+       const fileStat = await verifyApkArtifact();
       const range = request.headers.range;
 
       response.set({
         "Accept-Ranges": "bytes",
-        "Cache-Control": "public, max-age=3600, no-transform",
+         "Cache-Control": "private, no-store, no-transform",
         "Content-Disposition": `attachment; filename="${apkFileName}"`,
         "Content-Type": "application/vnd.android.package-archive",
+         "Referrer-Policy": "no-referrer",
         "X-Content-Type-Options": "nosniff",
+         "X-Robots-Tag": "noindex, nofollow, noarchive",
       });
 
       if (!range) {

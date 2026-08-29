@@ -1,0 +1,64 @@
+modules = ["nodejs-24", "python-base-3.13", "postgresql-16"]
+
+[deployment]
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "mobile-backup-security"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "mobile-typecheck"
+
+[[workflows.workflow]]
+name = "mobile-backup-security"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/mobile-app run test:core"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "mobile-typecheck"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/mobile-app run typecheck"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
+
+[nix]
+channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+EXPO_PUBLIC_GOOGLE_CLIENT_ID = "Mielőtt bármit megadok, kérlek írd ki pontosan a jelenlegi projekt konfigurációjából:  1. Android package/application ID 2. Expo scheme 3. A Task #22-höz elvárt pontos redirect URI 4. Milyen Google OAuth Client típust kell létrehoznom:    - Android    - Web application    - vagy mindkettő 5. Ha Android Client kell, írd ki a szükséges package name-et és SHA-1 fingerprintet is. 6. Pontosan mely Google API-t kell engedélyeznem a Google Cloud Console-ban a Drive appdata backuphoz. 7. Pontosan milyen scope-okat használ az app.  Ne kérj client secretet, tokent vagy jelszót. Csak a public Client ID és a szükséges nyilvános konfiguráció kerülhet az appba."
+EXPO_PUBLIC_OAUTH_REDIRECT_URI = "Mielőtt kitöltöm a két mezőt, írd ki nekem a jelenlegi projektből a pontos értékeket/elvárásokat:  - Android package/application ID - Expo scheme - pontos EXPO_PUBLIC_OAUTH_REDIRECT_URI - milyen Google OAuth Client típust kell létrehoznom - ha Android OAuth Client kell: package name + SHA-1 fingerprint - pontosan mely Google Drive API-t kell engedélyeznem - pontos scope-lista  Ezután lépésről lépésre végigmegyünk a Google Cloud Console beállításán.  Client secretet, tokent vagy jelszót nem adok meg."

@@ -1,6 +1,6 @@
 # Documenta current-main feature parity matrix
 
-Evidence status in this matrix is intentionally conservative: “APK” means included in the final standalone `preview` build only after the immutable build SHA is recorded below; “physical pending” is not a claim of native-device success.
+Evidence status in this matrix is intentionally conservative: “APK” means included in the final standalone `preview` build; “physical pending” is not a claim of native-device success.
 
 ## User-facing routes and data flows
 
@@ -43,14 +43,15 @@ Evidence status in this matrix is intentionally conservative: “APK” means in
 
 Filled only after the single final EAS build and byte-for-byte route verification:
 
-- GitHub `main` commit SHA: **pending**
-- EAS build ID: **pending**
-- EAS-reported source commit SHA: **pending**
-- GitHub/EAS SHA equality: **pending**
-- APK byte size: **pending**
-- APK SHA-256: **pending**
-- Internal download route: **pending**
-- Route byte-for-byte equality with EAS artifact: **pending**
+- GitHub `main` commit SHA: **761275527397a33ac7af68d4c7dc433e5744e211**
+- EAS build ID: **e6289353-bf0c-4e9a-bc47-423981b2398c**
+- EAS-reported source commit SHA: **761275527397a33ac7af68d4c7dc433e5744e211**
+- GitHub/EAS SHA equality: **PASS**
+- Local source provenance: **PASS** (exact raw commit payload hashes to the EAS/GitHub SHA and is recorded at `refs/eas-builds/current-main`)
+- APK byte size: **353,913,181**
+- APK SHA-256: **ee3f383febeaba3b4167c4348734ccd0e9d8136eee9715880129252da6025905**
+- Internal download route: **`/api/install/documenta`** (build-scoped, expiring HMAC token required; unsigned install/download requests return HTTP 401; authorized operators mint links with `pnpm --filter @workspace/api-server run mint:documenta-url`)
+- Route byte-for-byte equality with EAS artifact: **PASS** (`353,913,181` bytes; SHA-256 exact match; signed range `0–1023` returned HTTP 206; same-size tampered artifact rejected)
 
 ## Explicit validation boundary
 

@@ -41,7 +41,13 @@ AI-ready personal document and administration assistant for Android and iOS, wit
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Documenta remains internal-only during the current testing phase. Do not publish
+  production, create a public domain, deploy a public/static install page, or
+  otherwise expose the workspace publicly unless the user gives separate,
+  explicit approval in the current conversation.
+- Allowed work without that approval is limited to internal development APKs,
+  physical Android testing, Google Drive live validation, bug fixes, and
+  further feature development.
 
 ## Gotchas
 
