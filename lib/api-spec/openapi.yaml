@@ -1,0 +1,622 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /imap/messages:
+    post:
+      operationId: listImapMessages
+      tags: [imap]
+      summary: List IMAP messages and eligible attachments
+      description: Connects to the supplied IMAP server for this request only. TLS on port 993 is required; credentials are never stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImapListRequest"
+      responses:
+        "200":
+          description: A page of messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImapMessagePage"
+        "400":
+          $ref: "#/components/responses/InvalidImapRequest"
+        "401":
+          $ref: "#/components/responses/ImapAuthenticationFailed"
+        "502":
+          $ref: "#/components/responses/ImapUnavailable"
+  /imap/attachments/download:
+    post:
+      operationId: downloadImapAttachment
+      tags: [imap]
+      summary: Download an eligible IMAP attachment
+      description: Downloads an attachment for this request only and returns base64 content with a SHA-256 checksum.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImapAttachmentDownloadRequest"
+      responses:
+        "200":
+          description: Attachment content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImapAttachmentContent"
+        "400":
+          $ref: "#/components/responses/InvalidImapRequest"
+        "401":
+          $ref: "#/components/responses/ImapAuthenticationFailed"
+        "413":
+          description: Attachment exceeds 25 MB
+        "415":
+          description: Attachment is not a PDF or image
+        "502":
+          $ref: "#/components/responses/ImapUnavailable"
+  /documenta/documents/process:
+    post:
+      operationId: processDocumentaDocument
+      tags: [documenta]
+      security: [{ bearerAuth: [] }]
+      summary: Process client OCR text into user-scoped document intelligence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentProcessInput" }
+      responses:
+        "201":
+          description: Processed document
+          content: { application/json: { schema: { $ref: "#/components/schemas/DocumentProcessResult" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/QuotaExceeded" }
+        "415":
+          description: Cloud OCR supports JPEG and PNG images only
+        "503": { $ref: "#/components/responses/CloudNotConfigured" }
+  /documenta/auth/session:
+    post:
+      operationId: createDocumentaInstallationSession
+      tags: [documenta]
+      summary: Create a short-lived pseudonymous installation session
+      description: Accepts only an app-generated random UUIDv4. The server retains no raw installation identifier, IP address, bearer token, or API key.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/InstallationSessionInput" } } }
+      responses:
+        "201":
+          description: Short-lived signed bearer token
+          content: { application/json: { schema: { $ref: "#/components/schemas/InstallationSession" } } }
+        "400": { $ref: "#/components/responses/InvalidInstallationId" }
+        "429": { $ref: "#/components/responses/SessionRateLimited" }
+  /documenta/cloud-status:
+    get:
+      operationId: getDocumentaCloudStatus
+      tags: [documenta]
+      security: [{ bearerAuth: [] }]
+      summary: Return configured cloud providers and caller's remaining quota
+      responses:
+        "200":
+          description: Provider and user-scoped quota status
+          content: { application/json: { schema: { $ref: "#/components/schemas/CloudStatus" } } }
+  /documenta/cloud-ocr:
+    post:
+      operationId: requestDocumentaCloudOcr
+      tags: [documenta]
+      security: [{ bearerAuth: [] }]
+      summary: Opt-in Google Document AI OCR for bounded base64 pages
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CloudOcrInput" } } }
+      responses:
+        "200":
+          description: OCR text from configured Google Document AI
+          content: { application/json: { schema: { $ref: "#/components/schemas/CloudOcrResult" } } }
+        "415":
+          description: Cloud OCR supports JPEG and PNG images only
+        "503": { $ref: "#/components/responses/CloudNotConfigured" }
+  /documenta/documents:
+    get:
+      operationId: listDocumentaDocuments
+      tags: [documenta]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: pageSize
+          schema: { type: number, minimum: 1, maximum: 50, default: 25 }
+      responses:
+        "200":
+          description: User's documents only
+          content: { application/json: { schema: { $ref: "#/components/schemas/DocumentPage" } } }
+  /documenta/documents/{id}:
+    get:
+      operationId: getDocumentaDocument
+      tags: [documenta]
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/DocumentId" }]
+      responses:
+        "200":
+          description: User-scoped document and intelligence
+          content: { application/json: { schema: { $ref: "#/components/schemas/DocumentDetail" } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /documenta/documents/{id}/corrections:
+    post:
+      operationId: createDocumentaCorrection
+      tags: [documenta]
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/DocumentId" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CorrectionInput" } } }
+      responses:
+        "201":
+          description: User-only correction recorded
+          content: { application/json: { schema: { $ref: "#/components/schemas/CorrectionResult" } } }
+  /documenta/documents/{id}/relations:
+    get:
+      operationId: listDocumentaRelations
+      tags: [documenta]
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/DocumentId" }]
+      responses:
+        "200":
+          description: User-scoped relationships
+          content: { application/json: { schema: { $ref: "#/components/schemas/RelationPage" } } }
+  /documenta/batches/process:
+    post:
+      operationId: processDocumentaBatch
+      tags: [documenta]
+      security: [{ bearerAuth: [] }]
+      summary: Accept a bounded OCR archive batch
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/BatchProcessInput" } } }
+      responses:
+        "202":
+          description: Bounded batch accepted
+          content: { application/json: { schema: { $ref: "#/components/schemas/BatchProcessResult" } } }
+  /documenta/batches/{id}:
+    get:
+      operationId: getDocumentaBatch
+      tags: [documenta]
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/DocumentId" }]
+      responses:
+        "200":
+          description: Persistent batch job state and bounded page status list
+          content: { application/json: { schema: { $ref: "#/components/schemas/BatchJobStatus" } } }
+  /documenta/batches/{id}/pages:
+    post:
+      operationId: appendDocumentaBatchPages
+      tags: [documenta]
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/DocumentId" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/BatchAppendInput" } } }
+      responses:
+        "202": { description: Persisted append chunk }
+  /documenta/batches/{id}/resume:
+    post:
+      operationId: resumeDocumentaBatch
+      tags: [documenta]
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/DocumentId" }]
+      responses:
+        "200":
+          description: Processes the next persisted bounded page chunk
+          content: { application/json: { schema: { $ref: "#/components/schemas/BatchResumeResult" } } }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: HMAC
+  parameters:
+    DocumentId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+  responses:
+    InvalidImapRequest:
+      description: Invalid IMAP request
+    ImapAuthenticationFailed:
+      description: IMAP authentication failed
+    ImapUnavailable:
+      description: IMAP server unavailable
+    Unauthorized:
+      description: Valid signed bearer token required
+    NotFound:
+      description: User-scoped resource not found
+    QuotaExceeded:
+      description: Per-user daily or monthly processing limit reached
+    CloudNotConfigured:
+      description: Requested cloud provider is not configured
+    InvalidInstallationId:
+      description: Installation identifier is not a random UUIDv4
+    SessionRateLimited:
+      description: Too many session minting attempts
+  schemas:
+    InstallationSessionInput:
+      type: object
+      required: [installationId]
+      properties:
+        installationId:
+          type: string
+          pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    InstallationSession:
+      type: object
+      required: [tokenType, accessToken, expiresAt]
+      properties:
+        tokenType: { type: string, enum: [Bearer] }
+        accessToken: { type: string, writeOnly: true }
+        expiresAt: { type: string, format: date-time }
+    QuotaWindow:
+      type: object
+      required: [limit, used, remaining]
+      properties:
+        limit: { type: number }
+        used: { type: number, minimum: 0 }
+        remaining: { type: number, minimum: 0 }
+    CloudStatus:
+      type: object
+      required: [documentAi, gemini, quota]
+      properties:
+        documentAi: { type: string, enum: [CONFIGURED, NOT_CONFIGURED] }
+        gemini: { type: string, enum: [CONFIGURED, NOT_CONFIGURED] }
+        quota:
+          type: object
+          required: [daily, monthly, proFallback]
+          properties:
+            daily: { $ref: "#/components/schemas/QuotaWindow" }
+            monthly: { $ref: "#/components/schemas/QuotaWindow" }
+            proFallback:
+              type: object
+              required: [used, maximumFraction]
+              properties:
+                used: { type: number, minimum: 0 }
+                maximumFraction: { type: number, maximum: 0.15 }
+    CloudPage:
+      type: object
+      required: [contentBase64, mimeType]
+      properties:
+        contentBase64: { type: string, contentEncoding: base64, maxLength: 5592408 }
+        mimeType: { type: string, enum: [image/jpeg, image/png] }
+    CloudOcrInput:
+      type: object
+      required: [cloudOptIn, pages]
+      properties:
+        cloudOptIn: { type: boolean, enum: [true] }
+        pages: { type: array, minItems: 1, maxItems: 5, items: { $ref: "#/components/schemas/CloudPage" } }
+    CloudOcrResult:
+      type: object
+      required: [provider, pages, ocrText]
+      properties:
+        provider: { type: string, enum: [google_document_ai] }
+        pages:
+          type: array
+          items:
+            type: object
+            required: [pageIndex, text]
+            properties:
+              pageIndex: { type: number, minimum: 0 }
+              text: { type: string }
+        ocrText: { type: array, items: { type: string } }
+    DocumentProcessInput:
+      type: object
+      properties:
+        title: { type: string, maxLength: 255 }
+        ocrText: { type: string, minLength: 1, maxLength: 262144 }
+        cloudOptIn: { type: boolean, default: false }
+        cloudPages:
+          type: array
+          minItems: 1
+          maxItems: 5
+          description: Accepted only when cloudOptIn is true; never send binary multipart uploads.
+          items: { $ref: "#/components/schemas/CloudPage" }
+    Document:
+      type: object
+      required: [id, title, source, cloudOptIn, status, createdAt]
+      properties:
+        id: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+        title: { type: string }
+        source: { type: string }
+        cloudOptIn: { type: boolean }
+        status: { type: string }
+        createdAt: { type: string, format: date-time }
+    Intelligence:
+      type: object
+      required: [id, documentId, family, type, confidence, validationState, extraction]
+      properties:
+        id: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+        documentId: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+        family:
+          type: string
+          enum: [identity, financial, insurance, medical, legal, government, employment, education, housing, utilities, travel, vehicle, tax, commerce, communication, membership, other, unknown/novel]
+        type: { type: string }
+        subtype: { type: [string, "null"] }
+        purpose: { type: [string, "null"] }
+        summary: { type: [string, "null"] }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        validationState: { type: string, enum: [UNVALIDATED, PARTIALLY_VALIDATED, VALIDATED, INVALID] }
+        extraction: { type: object, additionalProperties: true }
+        model: { type: [string, "null"] }
+        fields:
+          type: array
+          items: { $ref: "#/components/schemas/IntelligenceField" }
+    IntelligenceField:
+      type: object
+      required: [name, value, confidence, validationState, evidence]
+      properties:
+        name: { type: string }
+        value: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        validationState: { type: string, enum: [UNVALIDATED, PARTIALLY_VALIDATED, VALIDATED, INVALID] }
+        evidence:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [text, start, end]
+            properties:
+              text: { type: string }
+              start: { type: number, minimum: 0 }
+              end: { type: number, minimum: 1 }
+              pageIndex: { type: number, minimum: 0 }
+    Evidence:
+      type: object
+      required: [id, field, value, pageNumber, startOffset, endOffset, confidence, validationState]
+      properties:
+        id: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+        field: { type: string }
+        value: { type: string }
+        pageNumber: { type: number, minimum: 1 }
+        startOffset: { type: number, minimum: 0 }
+        endOffset: { type: number, minimum: 0 }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        validationState: { type: string }
+    DocumentProcessResult:
+      type: object
+      required: [document, intelligence]
+      properties:
+        document: { $ref: "#/components/schemas/Document" }
+        intelligence: { $ref: "#/components/schemas/Intelligence" }
+    DocumentDetail:
+      type: object
+      required: [document, intelligence, evidence]
+      properties:
+        document: { $ref: "#/components/schemas/Document" }
+        intelligence: { type: array, items: { $ref: "#/components/schemas/Intelligence" } }
+        evidence: { type: array, items: { $ref: "#/components/schemas/Evidence" } }
+    DocumentPage:
+      type: object
+      required: [documents, hasMore]
+      properties:
+        documents: { type: array, items: { $ref: "#/components/schemas/Document" } }
+        hasMore: { type: boolean }
+    CorrectionInput:
+      type: object
+      required: [field, correctedValue]
+      properties:
+        field: { type: string, minLength: 1, maxLength: 100 }
+        correctedValue: { type: string, minLength: 1, maxLength: 4000 }
+    CorrectionResult:
+      type: object
+      required: [correction]
+      properties: { correction: { $ref: "#/components/schemas/Correction" } }
+    Correction:
+      type: object
+      required: [id, documentId, field, correctedValue, createdAt]
+      properties:
+        id: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+        documentId: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+        field: { type: string }
+        correctedValue: { type: string }
+        createdAt: { type: string, format: date-time }
+    Relation:
+      type: object
+      required: [id, fromDocumentId, toDocumentId, relationType]
+      properties:
+        id: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+        fromDocumentId: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+        toDocumentId: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+        relationType: { type: string }
+        confidence: { type: [number, "null"] }
+    RelationPage:
+      type: object
+      required: [relations]
+      properties: { relations: { type: array, items: { $ref: "#/components/schemas/Relation" } } }
+    BatchProcessInput:
+      type: object
+      required: [totalPages, pages]
+      properties:
+        totalPages: { type: number, minimum: 1, maximum: 4000 }
+        pages:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: "#/components/schemas/DocumentProcessInput" }
+    BatchAppendInput:
+      type: object
+      required: [pages]
+      properties:
+        pages:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: "#/components/schemas/DocumentProcessInput" }
+    BatchProcessResult:
+      type: object
+      required: [state, pageCount, maxPages, cloudProcessing]
+      properties:
+        state: { type: string, enum: [PENDING] }
+        pageCount: { type: number }
+        maxPages: { type: number, maximum: 50 }
+        cloudProcessing: { type: string }
+        jobId: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+        nextCursor: { type: number, minimum: 0 }
+    BatchJobStatus:
+      type: object
+      required: [job, pages, lexicalRelations]
+      properties:
+        job: { type: object, additionalProperties: true }
+        pages: { type: array, items: { type: object, additionalProperties: true } }
+        lexicalRelations: { type: string, enum: [LEXICAL_FALLBACK_NO_PGVECTOR] }
+    BatchResumeResult:
+      type: object
+      required: [jobId, processedPages, nextCursor, status]
+      properties:
+        jobId: { type: string, pattern: "^[0-9a-fA-F-]{36}$" }
+        processedPages: { type: number }
+        nextCursor: { type: number }
+        status: { type: string, enum: [PENDING, COMPLETE, COMPLETED_WITH_ERRORS] }
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    ImapCredentials:
+      type: object
+      required: [host, port, email, password]
+      properties:
+        host:
+          type: string
+          description: IMAP hostname, without a protocol or path
+        port:
+          type: number
+          enum: [993]
+        email:
+          type: string
+        password:
+          type: string
+          format: password
+          writeOnly: true
+    ImapListRequest:
+      allOf:
+        - $ref: "#/components/schemas/ImapCredentials"
+        - type: object
+          required: [mailbox, from, to]
+          properties:
+            mailbox:
+              type: string
+              maxLength: 255
+            from:
+              type: string
+              format: date-time
+            to:
+              type: string
+              format: date-time
+            pageSize:
+              type: number
+              minimum: 1
+              maximum: 50
+              default: 25
+            cursor:
+              type: string
+              pattern: "^[1-9][0-9]{0,9}$"
+    ImapAttachmentDownloadRequest:
+      allOf:
+        - $ref: "#/components/schemas/ImapCredentials"
+        - type: object
+          required: [mailbox, uid, part]
+          properties:
+            mailbox:
+              type: string
+              maxLength: 255
+            uid:
+              type: number
+              minimum: 1
+            part:
+              type: string
+              pattern: "^[0-9]+(\\.[0-9]+)*$"
+    ImapAttachment:
+      type: object
+      required: [part, filename, mimeType, size]
+      properties:
+        part:
+          type: string
+        filename:
+          type: string
+        mimeType:
+          type: string
+        size:
+          type: number
+          maximum: 26214400
+    ImapMessage:
+      type: object
+      required: [uid, subject, from, size, attachments]
+      properties:
+        uid:
+          type: number
+        subject:
+          type: string
+        from:
+          type: array
+          items:
+            type: string
+        receivedAt:
+          type: string
+          format: date-time
+        size:
+          type: number
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImapAttachment"
+    ImapMessagePage:
+      type: object
+      required: [messages, hasMore]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImapMessage"
+        nextCursor:
+          type: string
+        hasMore:
+          type: boolean
+    ImapAttachmentContent:
+      type: object
+      required: [filename, mimeType, size, sha256, base64]
+      properties:
+        filename:
+          type: string
+        mimeType:
+          type: string
+        size:
+          type: number
+          maximum: 26214400
+        sha256:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+        base64:
+          type: string
+          contentEncoding: base64
+

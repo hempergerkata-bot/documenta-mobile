@@ -341,6 +341,16 @@ export async function reconstructScanPage(
     shadows / pixels,
     faint / pixels,
   );
+  const meanLuminance = sum / pixels;
+  diagnostics.exposure = meanLuminance < 82 ? 'underexposed' : meanLuminance > 224 ? 'overexposed' : 'balanced';
+  if (diagnostics.exposure !== 'balanced') {
+    diagnostics.warnings.push(
+      diagnostics.exposure === 'underexposed'
+        ? 'Unterbelichtet erkannt – erneute Aufnahme empfohlen.'
+        : 'Überbelichtet erkannt – erneute Aufnahme empfohlen.',
+    );
+    diagnostics.retakeRecommended = true;
+  }
   diagnostics.dimensions = { width: decoded.width, height: decoded.height };
   diagnostics.corners = [
     { x: 0, y: 0 },

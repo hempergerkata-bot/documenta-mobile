@@ -1,4 +1,4 @@
-import { analyzeDocumentIntelligence, applyReviewDecision, applyReviewDecisions, checklistFromIntelligence, compareDocumentIntelligence, downstreamDocumentFacts, eligibleDeadlines, explanationFor, isCurrentDocumentIntelligence, isDeadlineEligible, isMainAmountEligible, localizedExplanationSections, normalizeDocumentDate } from './documentIntelligence';
+import { analyzeDocumentIntelligence, applyReviewDecision, applyReviewDecisions, checklistFromIntelligence, compareDocumentIntelligence, downstreamDocumentFacts, eligibleDeadlines, explanationFor, isCurrentDocumentIntelligence, isDeadlineEligible, isMainAmountEligible, localizedExplanationSections, normalizeDocumentDate, validateDocumentAmount, validateDocumentIdentifier, validateIban } from './documentIntelligence';
 
 // Avoid a project-wide @types/node dependency while still using node's test runner.
 declare function require(name: string): any;
@@ -276,6 +276,27 @@ test('legacy persisted intelligence is rejected before rendering and current sch
   const current = analyzeDocumentIntelligence({ text: 'Rechnung\nAbsender: Beispiel GmbH' });
   assert.equal(isCurrentDocumentIntelligence(legacy), false);
   assert.equal(isCurrentDocumentIntelligence(current), true);
+});
+
+test('validates money, identifiers, and IBAN deterministically without a network service', () => {
+  assert.equal(validateDocumentAmount('1.234,56 EUR'), 'valid');
+  assert.equal(validateDocumentAmount('10.05.2025'), 'invalid');
+  assert.equal(validateDocumentIdentifier('AZ-2025/09'), 'valid');
+  assert.equal(validateDocumentIdentifier('01'), 'invalid');
+  assert.equal(validateIban('DE89 3704 0044 0532 0130 00'), 'valid');
+  assert.equal(validateIban('DE89 3704 0044 0532 0130 01'), 'invalid');
+});
+
+test('keeps unfamiliar documents open-world and attaches spans and validation to critical extraction', () => {
+  const result = analyzeDocumentIntelligence({
+    text: 'Alien ledger\nIBAN: DE89 3704 0044 0532 0130 00\nReference: A-2025',
+    structuredFields: { person: 'Ada' },
+  });
+  assert.equal(result.taxonomy.mainCategory.value, 'unknown_novel');
+  assert.equal(result.parties.affectedPerson.value, 'Ada');
+  assert.equal(result.identifiers.value?.[0].kind, 'iban');
+  assert.equal(result.identifiers.value?.[0].validation, 'valid');
+  assert.ok((result.identifiers.value?.[0].evidence[0].start ?? -1) >= 0);
 });
 
 test('review decisions survive recomputation and accepted critical fields stop requesting review', () => {

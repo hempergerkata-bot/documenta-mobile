@@ -55,6 +55,7 @@ import type {
   OcrDocumentStatus,
   OcrPageResult,
 } from '@/utils/documentOcr';
+import type { CloudIntelligence, CloudState } from '@/utils/documentaCloud';
 import { DOCUMENT_STATUSES, hasFeature as checkFeature, migrateProfileIds, type DocumentStatus as CoreDocumentStatus, type Entitlements, type Feature } from '@/utils/documentCore';
 import {
   cleanupDeletedDocument, documentFingerprint, selectActiveDocuments, type ActivityRecord, type BusinessWorkspace, type CaseRecord, type ContractMonitor,
@@ -185,6 +186,9 @@ export type DocumentRecord = {
   analysisConfidenceByField?: Record<string, AnalysisConfidence>;
   intelligence?: DocumentIntelligenceResult;
   intelligenceReviewDecisions?: Record<string, ReviewDecision>;
+  /** Optional cloud metadata; local OCR/intelligence remains the source of record. */
+  cloudIntelligence?: CloudIntelligence;
+  cloudState?: CloudState;
   createdAt: string;
   lifecycle?: 'aktiv' | 'archiviert' | 'papierkorb';
   fingerprint?: string;
@@ -223,6 +227,8 @@ export type PendingAsset = {
   analysis?: DocumentAnalysisResult;
   ocrStatus?: OcrDocumentStatus;
   ocrPageResults?: OcrPageResult[];
+  cloudIntelligence?: CloudIntelligence;
+  cloudState?: CloudState;
 };
 
 export type BackupAppState = {

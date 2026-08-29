@@ -15,6 +15,7 @@ import type { DocumentAnalysisField } from '@/utils/documentAnalysis';
 import { GENERAL_CATEGORIES } from '@/utils/documentCore';
 import { documentFingerprint, findDuplicates } from '@/utils/documentDomain';
 import { analyzeDocumentIntelligence, normalizeDocumentDate } from '@/utils/documentIntelligence';
+import { mergeCloudEvidence } from '@/utils/documentaCloud';
 const categories = GENERAL_CATEGORIES;
 const documentTypes = [
   'Rechnung',
@@ -244,8 +245,10 @@ export default function DocumentDetailsScreen() {
           value?.confidence,
         ]),
       ),
+      cloudIntelligence: pendingAsset.cloudIntelligence,
+      cloudState: pendingAsset.cloudState,
       intelligence: pendingAsset.analysis
-        ? analyzeDocumentIntelligence({
+        ? mergeCloudEvidence(analyzeDocumentIntelligence({
             text: pendingAsset.analysis.text,
             structuredFields: {
               title: trimmedTitle,
@@ -273,7 +276,7 @@ export default function DocumentDetailsScreen() {
               status: item.status,
               person: item.person,
             })),
-          })
+          }), pendingAsset.cloudIntelligence, pendingAsset.cloudIntelligence?.sourceText ?? '')
         : undefined,
       createdAt: new Date().toISOString(),
     };
@@ -307,7 +310,12 @@ export default function DocumentDetailsScreen() {
           <View style={[styles.assetIcon, { backgroundColor: colors.card }]}><Feather name={pendingAsset?.mimeType?.includes('pdf') ? 'file' : 'image'} size={18} color={colors.sageDeep} /></View>
           <View style={styles.assetCopy}>
             <Text style={[styles.assetName, { color: colors.sageDeep }]} numberOfLines={1}>{pendingAsset?.name ?? t('details.assetSelected')}</Text>
-            <Text style={[styles.assetMeta, { color: colors.sageDeep }]}>{pendingAsset?.source === 'scanner' ? t('details.scannedMeta',{count:pendingAsset.pageUris?.length ?? 0}) : pendingAsset ? t('details.assetReady') : t('details.noAsset')}</Text>
+            <Text style={[styles.assetMeta, { color: colors.sageDeep }]}>
+              {pendingAsset?.source === 'scanner' ? t('details.scannedMeta',{count:pendingAsset.pageUris?.length ?? 0}) : pendingAsset ? t('details.assetReady') : t('details.noAsset')}
+              {pendingAsset?.cloudState
+                ? ` · ${t('security.cloud')}: ${pendingAsset.cloudState === 'cloud' ? t('common.open') : pendingAsset.cloudState === 'offline' ? t('explanation.localOnly') : t('details.analysisUnavailable')}`
+                : ''}
+            </Text>
           </View>
           <Feather name="check-circle" size={20} color={colors.sageDeep} />
         </View>

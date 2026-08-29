@@ -5,8 +5,10 @@
  */
 export const DOCUMENT_INTELLIGENCE_VERSION = '2.0.0';
 export type Confidence = 'high' | 'medium' | 'low' | 'unknown';
-export type Evidence = { text: string; source: 'ocr' | 'structured'; confidence: Confidence };
-export type Fact<T> = { value?: T; confidence: Confidence; evidence: Evidence[] };
+export type ValidationState = 'valid' | 'invalid' | 'not_applicable' | 'needs_review';
+/** OCR positions are UTF-16 offsets in the input text. Structured corrections have no OCR span. */
+export type Evidence = { text: string; source: 'ocr' | 'structured'; confidence: Confidence; start?: number; end?: number };
+export type Fact<T> = { value?: T; confidence: Confidence; evidence: Evidence[]; validation?: ValidationState };
 export type Language = 'de' | 'hu' | 'en' | 'unknown';
 export type DeadlineKind = 'payment' | 'response' | 'appeal' | 'cancellation' | 'appointment' | 'other';
 export type AmountRole = 'payable' | 'total' | 'net' | 'gross' | 'credit' | 'fee' | 'unknown';
@@ -16,6 +18,14 @@ export type CaseRelation = 'new' | 'existing' | 'uncertain';
 export type ChangeKind = 'amount' | 'deadline' | 'status' | 'contract_term' | 'fee' | 'address' | 'person' | 'reference' | 'requirement' | 'decision';
 
 export type StructuredFields = Record<string, string | string[] | undefined>;
+/** The intentionally bounded local taxonomy. Everything outside it remains unknown/novel. */
+export const DOCUMENT_FAMILIES = [
+  'finance', 'insurance', 'authority', 'work', 'contract', 'health', 'education',
+  'housing', 'banking', 'tax', 'utilities', 'telecom', 'transport', 'legal',
+  'identity', 'family', 'correspondence',
+] as const;
+export type DocumentFamily = typeof DOCUMENT_FAMILIES[number];
+export type ValidatedIdentifier = { kind: 'iban' | 'reference' | 'tax' | 'patient' | 'unknown'; value: string; validation: ValidationState; evidence: Evidence[] };
 export type IntelligenceInput = {
   text: string;
   structuredFields?: StructuredFields;
@@ -69,9 +79,10 @@ export type DocumentIntelligenceResult = {
   /** Alias kept separate for consumers that distinguish OCR/document language from UI language. */
   documentLanguage: Fact<Language>;
   taxonomy: { mainCategory: Fact<string>; subtype: Fact<string>; purpose: Fact<string>; roles: Fact<string[]> };
-  parties: { sender: Fact<string>; senderDepartment: Fact<string>; senderContact: Fact<string>; recipient: Fact<string> };
+  parties: { sender: Fact<string>; senderDepartment: Fact<string>; senderContact: Fact<string>; recipient: Fact<string>; affectedPerson: Fact<string> };
   dates: { documentDate: Fact<string>; periods: Fact<string[]>; references: Fact<string[]> };
   amounts: { items: MoneyAmount[]; main: MoneyAmount };
+  identifiers: Fact<ValidatedIdentifier[]>;
   deadlines: TypedDeadline[];
   deadlineConflicts: DeadlineConflict[];
   actions: Action[];
@@ -114,13 +125,16 @@ const de: Adapter = {
   category: [
     [/\b(?:lohnabrechnung|gehaltsabrechnung)\b/i, 'work', 'payroll', 'payroll'], [/\b(?:beitragserhöhung|prämienerhöhung)\b/i, 'insurance', 'premium_increase', 'insurance_change'], [/\b(?:kfz-versicherung|autoversicherung)\b/i, 'insurance', 'auto_insurance', 'insurance'],
     [/\b(?:versicherung(?:sbrief|sschreiben)|police)\b/i, 'insurance', 'insurance_letter', 'insurance'], [/\b(?:zahlungs?erinnerung|mahnung)\b/i, 'finance', 'payment_reminder', 'payment'], [/\b(?:inkasso|vollstreckungsankündigung)\b/i, 'finance', 'collection_letter', 'collection'],
-    [/\b(?:strom|gas|wasser|energie).{0,20}\brechnung\b/i, 'housing', 'utility_invoice', 'payment'], [/\b(?:steuerbescheid|finanzamt)\b/i, 'finance', 'tax_document', 'tax'], [/\b(?:kontoauszug|bankmitteilung)\b/i, 'finance', 'bank_document', 'information'],
+    [/\b(?:strom|gas|wasser|energie).{0,20}\brechnung\b/i, 'utilities', 'utility_invoice', 'payment'], [/\b(?:steuerbescheid|finanzamt)\b/i, 'tax', 'tax_document', 'tax'], [/\b(?:kontoauszug|bankmitteilung)\b/i, 'banking', 'bank_document', 'information'],
     [/\b(?:mietvertrag|miete|wohnung)\b/i, 'housing', 'rental_housing', 'housing'], [/\b(?:abo|abonnement)\b/i, 'contract', 'subscription', 'subscription'], [/\b(?:vertragsänderung|vertrag.{0,25}(?:geändert|änderung))\b/i, 'contract', 'contract_change', 'contract_change'],
     [/\b(?:kündigung|widerruf)\b/i, 'contract', 'cancellation', 'cancellation'], [/\b(?:vertrag)\b/i, 'contract', 'contract', 'contract'], [/\b(?:ablehnung|abgelehnt)\b/i, 'authority', 'rejection', 'decision'],
     [/\b(?:genehmigung|genehmigt|bewilligung)\b/i, 'authority', 'approval', 'decision'], [/\b(?:bescheid|widerspruch|behörde|amt)\b/i, 'authority', 'authority_decision', 'decision'],
     [/\b(?:laborbefund|laborbericht|befund)\b/i, 'health', 'lab_report', 'medical'], [/\b(?:rezept|verordnung)\b/i, 'health', 'prescription_order', 'medical'], [/\b(?:arztbrief)\b/i, 'health', 'doctor_letter', 'medical'],
     [/\b(?:terminbestätigung)\b/i, 'health', 'appointment_confirmation', 'appointment'], [/\b(?:termin|arzt)\b/i, 'health', 'appointment', 'appointment'], [/\b(?:schule|kita|kindergarten)\b/i, 'education', 'school_kita', 'information'],
     [/\b(?:arbeitsbescheinigung|arbeitsvertrag|arbeitgeber)\b/i, 'work', 'work_document', 'work'], [/\b(?:rechnung|zahlung)\b/i, 'finance', 'invoice', 'payment'],
+    [/\b(?:personalausweis|reisepass|aufenthaltstitel)\b/i, 'identity', 'identity_document', 'identification'], [/\b(?:anwalt|gericht|klage|urteil)\b/i, 'legal', 'legal_document', 'legal'],
+    [/\b(?:telefon|mobilfunk|internet|telekom)\b/i, 'telecom', 'telecom_document', 'service'], [/\b(?:bahn|flug|fahrkarte|verkehr)\b/i, 'transport', 'transport_document', 'transport'],
+    [/\b(?:familie|kind|unterhalt|eltern)\b/i, 'family', 'family_document', 'information'], [/\b(?:brief|mitteilung|korrespondenz)\b/i, 'correspondence', 'letter', 'information'],
   ],
   labels: { sender: /\b(?:absender|von|firma)\s*[:\-]\s*(.+)/i, recipient: /\b(?:empfänger|an)\s*[:\-]\s*(.+)/i, department: /\b(?:abteilung|fachbereich)\s*[:\-]\s*(.+)/i, contact: /\b(?:kontakt|ansprechpartner|telefon|e-mail)\s*[:\-]\s*(.+)/i, documentDate: /\b(?:rechnungsdatum|ausstellungsdatum|abrechnungsdatum|dokumentdatum|datum)\s*[:\-]\s*((?:\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2}|\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4}))/i, reference: /\b(?:aktenzeichen|geschäftszeichen|referenz(?:nummer)?|rechnungsnummer)\s*[:#\-]?\s*([A-Z0-9./-]{3,})/gi },
 };
@@ -137,10 +151,39 @@ const en: Adapter = {
   labels: { sender: /\b(?:sender|from|company)\s*[:\-]\s*(.+)/i, recipient: /\b(?:recipient|to)\s*[:\-]\s*(.+)/i, department: /\b(?:department)\s*[:\-]\s*(.+)/i, contact: /\b(?:contact|phone|e-mail)\s*[:\-]\s*(.+)/i, documentDate: /\b(?:invoice date|issue date|document date|date)\s*[:\-]\s*((?:\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2}|\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4}))/i, reference: /\b(?:reference|case number|invoice number)\s*[:#\-]?\s*([A-Z0-9./-]{3,})/gi },
 };
 const unknownEvidence = (): Evidence[] => [];
-const unknown = <T>(): Fact<T> => ({ confidence: 'unknown', evidence: unknownEvidence() });
+const unknown = <T>(): Fact<T> => ({ confidence: 'unknown', evidence: unknownEvidence(), validation: 'needs_review' });
 const clean = (v: string) => v.replace(/\s+/g, ' ').replace(/^[\s:–-]+|[\s;,]+$/g, '').trim();
-const ev = (text: string, source: Evidence['source'], confidence: Confidence): Evidence => ({ text: clean(text).slice(0, 240), source, confidence });
-const fact = <T>(value: T | undefined, evidence: Evidence[], confidence: Confidence): Fact<T> => value === undefined ? unknown<T>() : { value, evidence, confidence };
+const ev = (text: string, source: Evidence['source'], confidence: Confidence, sourceText?: string): Evidence => {
+  const clipped = clean(text).slice(0, 240);
+  const start = source === 'ocr' && sourceText ? sourceText.indexOf(text) : -1;
+  return { text: clipped, source, confidence, ...(start >= 0 ? { start, end: start + text.length } : {}) };
+};
+const fact = <T>(value: T | undefined, evidence: Evidence[], confidence: Confidence, validation: ValidationState = 'not_applicable'): Fact<T> =>
+  value === undefined ? unknown<T>() : { value, evidence, confidence, validation };
+
+/** ISO-13616 mod-97 validation, performed locally and without network access. */
+export function validateIban(value: string): ValidationState {
+  const iban = value.replace(/\s+/g, '').toUpperCase();
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$/.test(iban)) return 'invalid';
+  const rearranged = `${iban.slice(4)}${iban.slice(0, 4)}`;
+  let remainder = 0;
+  for (const character of rearranged) {
+    const digits = character >= 'A' && character <= 'Z' ? String(character.charCodeAt(0) - 55) : character;
+    for (const digit of digits) remainder = (remainder * 10 + Number(digit)) % 97;
+  }
+  return remainder === 1 ? 'valid' : 'invalid';
+}
+export function validateDocumentAmount(value: string): ValidationState {
+  const compact = value.trim().replace(/\s/g, '');
+  if (normalizeDocumentDate(value) || !/(?:€|EUR|Ft|HUF|\d)/i.test(compact)) return 'invalid';
+  return /^(?:€|EUR|Ft|HUF)?-?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})(?:€|EUR|Ft|HUF)?$/i.test(compact) ||
+    /^-?\d+(?:[.,]\d{2})(?:€|EUR|Ft|HUF)?$/i.test(compact) ? 'valid' : 'invalid';
+}
+export function validateDocumentIdentifier(value: string): ValidationState {
+  const cleanValue = value.trim();
+  return /^[A-Z0-9][A-Z0-9./_-]{2,}$/i.test(cleanValue) && !normalizeDocumentDate(cleanValue)
+    ? 'valid' : 'invalid';
+}
 const linesOf = (text: string) => text.replace(/\0/g, '').split(/\r?\n/).map(clean).filter(Boolean);
 const confidenceFor = (source: Evidence['source']) => source === 'structured' ? 'high' as const : 'medium' as const;
 
@@ -163,7 +206,14 @@ function valueFrom(input: IntelligenceInput, key: string, label?: RegExp): Fact<
 function extractTaxonomy(text: string, adapter?: Adapter): DocumentIntelligenceResult['taxonomy'] {
   const hit = adapter?.category.find(([pattern]) => pattern.test(text));
   const evidence = hit ? [ev(hit[0].source, 'ocr', 'medium')] : [];
-  return { mainCategory: hit ? fact(hit[1], evidence, 'medium') : unknown(), subtype: hit ? fact(hit[2], evidence, 'medium') : unknown(), purpose: hit ? fact(hit[3], evidence, 'medium') : unknown(), roles: fact(hit ? [hit[3]] : undefined, evidence, hit ? 'medium' : 'unknown') };
+  // Never force an unfamiliar document into a known family: this is an explicit
+  // open-world result rather than a guessed classification.
+  return {
+    mainCategory: hit ? fact(hit[1], evidence, 'medium') : fact('unknown_novel', [], 'unknown', 'needs_review'),
+    subtype: hit ? fact(hit[2], evidence, 'medium') : fact('unknown_novel', [], 'unknown', 'needs_review'),
+    purpose: hit ? fact(hit[3], evidence, 'medium') : unknown(),
+    roles: fact(hit ? [hit[3]] : undefined, evidence, hit ? 'medium' : 'unknown'),
+  };
 }
 function extractDates(text: string, input: IntelligenceInput, adapter?: Adapter) {
   const supplied = input.structuredFields?.documentDate;
@@ -171,17 +221,39 @@ function extractDates(text: string, input: IntelligenceInput, adapter?: Adapter)
   const labelled = adapter?.labels.documentDate ? text.match(adapter.labels.documentDate) : undefined;
   const labelledDate = labelled?.[1] ? normalizeDocumentDate(labelled[1]) : undefined;
   // An unlabeled date may be a deadline, appointment, or reference: never call it document date.
-  const documentDate = structuredDate ? fact(structuredDate, [ev(`documentDate: ${supplied}`, 'structured', 'high')], 'high') : labelledDate ? fact(labelledDate, [ev(labelled![0], 'ocr', 'high')], 'high') : unknown<string>();
+  const documentDate = structuredDate ? fact(structuredDate, [ev(`documentDate: ${supplied}`, 'structured', 'high')], 'high', 'valid') : labelledDate ? fact(labelledDate, [ev(labelled![0], 'ocr', 'high', text)], 'high', 'valid') : unknown<string>();
   const periods = [...text.matchAll(/\b(?:von|vom|für|időszak)\s+(\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4})\s*(?:bis|[-–])\s*(\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4})/gi)]
     .map(m => [normalizeDocumentDate(m[1]), normalizeDocumentDate(m[2])])
     .filter((m): m is [string, string] => !!m[0] && !!m[1])
     .map(m => `${m[0]} – ${m[1]}`);
-  return { documentDate, periods: fact(periods.length ? periods : undefined, periods.map(x => ev(x, 'ocr', 'medium')), periods.length ? 'medium' as const : 'unknown' as const), references: unknown<string[]>() };
+  return { documentDate, periods: fact(periods.length ? periods : undefined, periods.map(x => ev(x, 'ocr', 'medium', text)), periods.length ? 'medium' as const : 'unknown' as const), references: unknown<string[]>() };
 }
 function extractReferences(text: string, adapter?: Adapter): Fact<string[]> {
   if (!adapter) return unknown<string[]>();
   const refs = [...text.matchAll(adapter.labels.reference)].map(m => m[1]).filter(Boolean);
-  return fact(refs.length ? [...new Set(refs)] : undefined, refs.map(x => ev(x, 'ocr', 'high')), refs.length ? 'high' : 'unknown');
+  return fact(refs.length ? [...new Set(refs)] : undefined, refs.map(x => ev(x, 'ocr', 'high', text)), refs.length ? 'high' : 'unknown', refs.length ? 'valid' : 'needs_review');
+}
+function extractIdentifiers(text: string, input: IntelligenceInput, references: Fact<string[]>): Fact<ValidatedIdentifier[]> {
+  const candidates: ValidatedIdentifier[] = [];
+  const push = (kind: ValidatedIdentifier['kind'], value: string, evidence: Evidence[], validation: ValidationState) => {
+    if (!candidates.some(item => item.kind === kind && item.value === value)) candidates.push({ kind, value, evidence, validation });
+  };
+  const suppliedIban = input.structuredFields?.iban;
+  if (typeof suppliedIban === 'string' && suppliedIban.trim()) {
+    push('iban', suppliedIban.replace(/\s+/g, ' ').trim(), [ev(`iban: ${suppliedIban}`, 'structured', 'high')], validateIban(suppliedIban));
+  }
+  for (const match of text.matchAll(/\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b/gi)) {
+    push('iban', match[0].replace(/\s+/g, ' '), [ev(match[0], 'ocr', 'medium', text)], validateIban(match[0]));
+  }
+  (references.value ?? []).forEach(value => push('reference', value, references.evidence.filter(e => e.text.includes(value)), validateDocumentIdentifier(value)));
+  for (const key of ['taxNumber', 'patientNumber', 'insuranceNumber', 'customerNumber'] as const) {
+    const value = input.structuredFields?.[key];
+    if (typeof value === 'string' && value.trim()) {
+      push(key === 'taxNumber' ? 'tax' : key === 'patientNumber' ? 'patient' : 'unknown', value.trim(), [ev(`${key}: ${value}`, 'structured', 'high')], validateDocumentIdentifier(value));
+    }
+  }
+  const confidence: Confidence = candidates.length ? candidates.some(item => item.validation === 'invalid') ? 'low' : 'medium' : 'unknown';
+  return fact(candidates.length ? candidates : undefined, candidates.flatMap(item => item.evidence), confidence, candidates.length && candidates.every(item => item.validation === 'valid') ? 'valid' : 'needs_review');
 }
 function extractAmounts(text: string, input?: IntelligenceInput): { items: MoneyAmount[]; main: MoneyAmount } {
   const matches = [...text.matchAll(/(?:€|EUR|Ft|HUF)?\s*(\d{1,3}(?:[ .]\d{3})*(?:[,.]\d{2})|\d+[,.]\d{2})\s*(€|EUR|Ft|HUF)?/gi)]
@@ -191,7 +263,9 @@ function extractAmounts(text: string, input?: IntelligenceInput): { items: Money
     const lineEnd = text.indexOf('\n', m.index!);
     const context = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd);
     const role: AmountRole = /(?:zu zahlen|zahlbar|fällig|fizetendő)/i.test(context) ? 'payable' : /(?:gesamt|végösszeg|total)/i.test(context) ? 'total' : /(?:netto|nettó)/i.test(context) ? 'net' : /(?:brutto|bruttó)/i.test(context) ? 'gross' : /(?:gutschrift|jóváírás)/i.test(context) ? 'credit' : /(?:gebühr|díj)/i.test(context) ? 'fee' : 'unknown';
-    return { value: clean(m[0]), role, currency: m[2] || (/\b(?:Ft|HUF)\b/i.test(m[0]) ? 'HUF' : undefined), confidence: role === 'unknown' ? 'low' : 'medium', evidence: [ev(context, 'ocr', role === 'unknown' ? 'low' : 'medium')] };
+    const value = clean(m[0]);
+    const validation = validateDocumentAmount(value);
+    return { value, role, currency: m[2] || (/\b(?:Ft|HUF)\b/i.test(m[0]) ? 'HUF' : undefined), confidence: validation === 'valid' ? (role === 'unknown' ? 'low' : 'medium') : 'low', evidence: [ev(context, 'ocr', role === 'unknown' ? 'low' : 'medium', text)], validation };
   });
   const supplied = input?.structuredFields?.amount;
   const structuredAmount = typeof supplied === 'string' && clean(supplied)
@@ -200,10 +274,11 @@ function extractAmounts(text: string, input?: IntelligenceInput): { items: Money
         role: /(?:payment|payable|zahlung|fizet)/i.test(String(input?.structuredFields?.status ?? input?.structuredFields?.paymentStatus ?? '')) ? 'payable' as const : 'total' as const,
         confidence: 'high' as const,
         evidence: [ev(`amount: ${supplied}`, 'structured', 'high')],
+        validation: validateDocumentAmount(clean(supplied)),
       }
     : undefined;
   const main = structuredAmount || items.find(x => x.role === 'payable') || items.find(x => x.role === 'total');
-  return { items, main: main ?? { role: 'unknown', confidence: 'unknown', evidence: [] } };
+  return { items, main: main ?? { role: 'unknown', confidence: 'unknown', evidence: [], validation: 'needs_review' } };
 }
 function parseRelativeDays(text: string, referenceDate?: string): { value?: string; basis: string } {
   const m = text.match(/\b(?:within|innerhalb von|binnen|legkésőbb)\s+(\d+)\s+(?:days|tagen|napon)\b/i);
@@ -227,7 +302,7 @@ function extractDeadlines(text: string, input: IntelligenceInput): TypedDeadline
   const found: TypedDeadline[] = [];
   kinds.forEach(([kind, re]) => [...text.matchAll(re)].forEach(m => {
     const value = normalizeDocumentDate(m[1]);
-    if (value) found.push({ kind, value, source: m[0], relative: false, confidence: 'high', evidence: [ev(m[0], 'ocr', 'high')] });
+    if (value) found.push({ kind, value, source: m[0], relative: false, confidence: 'high', evidence: [ev(m[0], 'ocr', 'high', text)], validation: 'valid' });
   }));
   const relative = parseRelativeDays(text, input.referenceDate);
   if (relative.basis) {
@@ -240,7 +315,7 @@ function extractDeadlines(text: string, input: IntelligenceInput): TypedDeadline
     if (dueDate) {
       // A confirmed field is a correction, not an additional competing OCR deadline.
       for (let index = found.length - 1; index >= 0; index -= 1) if (found[index].kind === 'payment') found.splice(index, 1);
-      found.unshift({ kind: 'payment', value: dueDate, source: `dueDate: ${supplied}`, relative: false, confidence: 'high', evidence: [ev(`dueDate: ${supplied}`, 'structured', 'high')] });
+      found.unshift({ kind: 'payment', value: dueDate, source: `dueDate: ${supplied}`, relative: false, confidence: 'high', evidence: [ev(`dueDate: ${supplied}`, 'structured', 'high')], validation: 'valid' });
     }
   }
   return found;
@@ -493,7 +568,8 @@ export function isMainAmountEligible(result: DocumentIntelligenceResult): boolea
   const decision = result.reviewRecords.find(record => record.field === 'mainAmount')?.decision;
   if (decision === 'reject' || decision === 'unknown') return false;
   return !!amount.value && (amount.role === 'payable' || amount.role === 'total') &&
-    (amount.confidence === 'high' || amount.confidence === 'medium') && !normalizeDocumentDate(amount.value);
+    (amount.confidence === 'high' || amount.confidence === 'medium') &&
+    amount.validation !== 'invalid' && !normalizeDocumentDate(amount.value);
 }
 /** Immutably records a human review without ever replacing OCR/structured evidence. */
 export function applyReviewDecision(result: DocumentIntelligenceResult, field: string, decision: ReviewDecision): DocumentIntelligenceResult {
@@ -541,8 +617,15 @@ export function analyzeDocumentIntelligence(input: IntelligenceInput): DocumentI
   const language = detectDocumentLanguage(text);
   const adapter = adapterFor(language.value ?? 'unknown');
   const taxonomy = extractTaxonomy(text, adapter);
-  const parties = { sender: valueFrom(input, 'sender', adapter?.labels.sender), senderDepartment: valueFrom(input, 'senderDepartment', adapter?.labels.department), senderContact: valueFrom(input, 'senderContact', adapter?.labels.contact), recipient: valueFrom(input, 'recipient', adapter?.labels.recipient) };
+  const parties = {
+    sender: valueFrom(input, 'sender', adapter?.labels.sender),
+    senderDepartment: valueFrom(input, 'senderDepartment', adapter?.labels.department),
+    senderContact: valueFrom(input, 'senderContact', adapter?.labels.contact),
+    recipient: valueFrom(input, 'recipient', adapter?.labels.recipient),
+    affectedPerson: valueFrom(input, 'person'),
+  };
   const dates = extractDates(text, input, adapter); dates.references = extractReferences(text, adapter);
+  const identifiers = extractIdentifiers(text, input, dates.references);
   const amounts = extractAmounts(text, input), deadlines = extractDeadlines(text, input), deadlineConflicts = findDeadlineConflicts(deadlines), obligations = extractObligations(text, deadlines);
   let consequenceRights = extractConsequencesAndRights(text, deadlines);
   const responseNecessary = fact(obligations.actions.some(x => x.responseNecessary) || deadlines.some(x => x.kind === 'response'), [...obligations.actions.flatMap(x => x.evidence), ...deadlines.filter(x => x.kind === 'response').flatMap(x => x.evidence)], obligations.actions.length || deadlines.some(x => x.kind === 'response') ? 'medium' : 'unknown');
@@ -590,7 +673,7 @@ export function analyzeDocumentIntelligence(input: IntelligenceInput): DocumentI
   const eligibleDeadlineValues = deadlines.filter((deadline, index) => !!deadline.value && !deadline.relative && (deadline.confidence === 'high' || deadline.confidence === 'medium') && deadlineDecision !== 'reject' && deadlineDecision !== 'unknown' && !deadlineConflicts.some(conflict => conflict.deadlineIndexes.includes(index)));
   const deadlineSummary = eligibleDeadlineValues.length ? eligibleDeadlineValues.map(x => `${x.kind}: ${x.value}`).join('; ') : 'No clear deadline was found.';
   const amountDecision = reviewRecords.find(record => record.field === 'mainAmount')?.decision;
-  const eligibleAmount = !!amounts.main.value && (amounts.main.role === 'payable' || amounts.main.role === 'total') && (amounts.main.confidence === 'high' || amounts.main.confidence === 'medium') && !normalizeDocumentDate(amounts.main.value) && amountDecision !== 'reject' && amountDecision !== 'unknown';
+  const eligibleAmount = !!amounts.main.value && (amounts.main.role === 'payable' || amounts.main.role === 'total') && (amounts.main.confidence === 'high' || amounts.main.confidence === 'medium') && amounts.main.validation !== 'invalid' && !normalizeDocumentDate(amounts.main.value) && amountDecision !== 'reject' && amountDecision !== 'unknown';
   const moneySummary = eligibleAmount ? `Main supported amount: ${amounts.main.value}.` : 'The main amount could not be reliably identified.';
   const normal = [summary.value || 'Document details could not be safely classified.', actionSummary, deadlineSummary, moneySummary].join(' ');
   const relations = relationSuggestions(input, dates.references.value || [], parties.sender.value, taxonomy.subtype.value);
@@ -600,5 +683,5 @@ export function analyzeDocumentIntelligence(input: IntelligenceInput): DocumentI
   const chain = relations.filter((x): x is RelationSuggestion & { relation: 'response' | 'chain' } => x.relation === 'response' || x.relation === 'chain').map(x => ({ relation: x.relation, evidence: x.reasons.map(reason => ev(reason, 'ocr', x.confidence)), confidence: x.confidence }));
   const plainLanguageExplanation = [summary.value || 'This document could not be clearly classified.', sortedActions[0] ? `Next step: ${sortedActions[0].requirement}` : '', deadlineSummary, moneySummary].filter(Boolean).join(' ');
   const eligibleActionEvidence = sortedActions.some(action => action.evidence.length > 0);
-  return { version: DOCUMENT_INTELLIGENCE_VERSION, language, documentLanguage: language, taxonomy, parties, dates, amounts, deadlines, deadlineConflicts, actions: obligations.actions, responseNecessary, missingRequirements: obligations.missing, checklist: obligations.missing, consequences: consequenceRights, rightsOptions: consequenceRights.rights, alternatives: consequenceRights.alternatives, keyPoints, relations, changes, case: { summary, nextStep, closable, relation: fact(caseRelation, relations.flatMap(x => x.reasons.map(reason => ev(reason, 'ocr', x.confidence))), relations.length ? 'medium' : taxonomy.mainCategory.value ? 'low' : 'unknown'), status: fact(caseStatus, [...obligations.actions.flatMap(x => x.evidence), ...consequenceRights.riskLevel.evidence], caseStatus === 'unknown' ? 'unknown' : 'medium'), chain }, explanations: { short: `${summary.value || 'Unknown document.'} ${deadlineSummary}`, normal, detailed: `${normal} Review: ${reviewReasons.length ? reviewReasons.join('; ') : 'no critical unknowns detected.'}` }, plainLanguageExplanation, personalImpact: eligibleAmount || eligibleDeadlineValues.length || eligibleActionEvidence ? normal : 'Personal impact is unknown because no supported obligation, deadline, or amount was found.', actionSummary, deadlineSummary, moneySummary, reviewRequired: reviewReasons.length > 0, reviewReasons, reviewRecords };
+  return { version: DOCUMENT_INTELLIGENCE_VERSION, language, documentLanguage: language, taxonomy, parties, dates, amounts, identifiers, deadlines, deadlineConflicts, actions: obligations.actions, responseNecessary, missingRequirements: obligations.missing, checklist: obligations.missing, consequences: consequenceRights, rightsOptions: consequenceRights.rights, alternatives: consequenceRights.alternatives, keyPoints, relations, changes, case: { summary, nextStep, closable, relation: fact(caseRelation, relations.flatMap(x => x.reasons.map(reason => ev(reason, 'ocr', x.confidence))), relations.length ? 'medium' : taxonomy.mainCategory.value ? 'low' : 'unknown'), status: fact(caseStatus, [...obligations.actions.flatMap(x => x.evidence), ...consequenceRights.riskLevel.evidence], caseStatus === 'unknown' ? 'unknown' : 'medium'), chain }, explanations: { short: `${summary.value || 'Unknown document.'} ${deadlineSummary}`, normal, detailed: `${normal} Review: ${reviewReasons.length ? reviewReasons.join('; ') : 'no critical unknowns detected.'}` }, plainLanguageExplanation, personalImpact: eligibleAmount || eligibleDeadlineValues.length || eligibleActionEvidence ? normal : 'Personal impact is unknown because no supported obligation, deadline, or amount was found.', actionSummary, deadlineSummary, moneySummary, reviewRequired: reviewReasons.length > 0, reviewReasons, reviewRecords };
 }

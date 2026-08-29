@@ -21,6 +21,7 @@ import { createPersistentScannedDocument, deleteTemporaryScanPages } from '@/uti
 import { recognizeAndAnalyzeDocument } from '@/utils/documentOcr';
 import { MAX_SCAN_PAGES } from '@/utils/scanLimits';
 import type { DocumentVariant } from '@/utils/documentReconstruction';
+import { cloudFailureState, processCloudIntelligence, uploadCloudOcrPages, type CloudState } from '@/utils/documentaCloud';
 
 export default function ScanReviewScreen() {
   const colors = useColors();
@@ -33,9 +34,41 @@ export default function ScanReviewScreen() {
   const [busyLabel, setBusyLabel] = useState('');
   const [error, setError] = useState('');
   const [selectedVariant, setSelectedVariant] = useState<DocumentVariant>('clean');
+  const [cloudOptIn, setCloudOptIn] = useState(false);
+  const [cloudState, setCloudState] = useState<CloudState>('offline');
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
   const source = pendingAsset?.source ?? 'scanner';
   const isGalleryImport = source === 'gallery';
+  const savedDiagnostics = pendingAsset?.reconstructionDiagnostics ?? [];
+
+  const cloudForLocalOcr = async (text: string, name: string, pageUris: string[]) => {
+    if (!cloudOptIn) return { cloudState: 'offline' as const };
+    if (!text.trim()) {
+      setCloudState('unavailable');
+      return { cloudState: 'unavailable' as const };
+    }
+    setCloudState('cloud');
+    let cloudOcr: Awaited<ReturnType<typeof uploadCloudOcrPages>>;
+    let ocrFailure: unknown;
+    try {
+      // Page bytes leave the device only here, after the user has explicitly opted in.
+      // The local ML Kit text remains the fallback and source of record.
+      cloudOcr = await uploadCloudOcrPages(pageUris);
+    } catch (caught) {
+      ocrFailure = caught;
+    }
+    try {
+      const sourceText = cloudOcr?.text || text;
+      const processed = await processCloudIntelligence(sourceText, name);
+      const cloudIntelligence = { ...processed, sourceText, ...(cloudOcr ? { ocrPages: cloudOcr.pages } : {}) };
+      return { cloudState: 'cloud' as const, cloudIntelligence };
+    } catch (caught) {
+      const state = cloudFailureState(caught ?? ocrFailure);
+      setCloudState(state);
+      // Local OCR is deliberately retained on every remote failure.
+      return { cloudState: state };
+    }
+  };
 
   const scanMore = async (replaceIndex?: number) => {
     setBusy(true);
@@ -101,6 +134,8 @@ export default function ScanReviewScreen() {
           result.pageUris,
           result.originalPageUris,
         );
+        setBusyLabel(`${t('scan.recognizing')} · ${t('security.cloud')}`);
+        const cloud = await cloudForLocalOcr(analysis.text, `Documenta Scan ${pages.length}`, result.originalPageUris);
         setPendingAsset({
           uri: result.pdfUri,
           pdfUri: result.pdfUri,
@@ -117,6 +152,7 @@ export default function ScanReviewScreen() {
           analysis,
           ocrStatus: analysis.ocrStatus,
           ocrPageResults: analysis.pageResults,
+          ...cloud,
         });
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         router.replace('/document-details');
@@ -126,6 +162,7 @@ export default function ScanReviewScreen() {
       setBusyLabel(t('scan.recognizing'));
       try {
         const analysis = await recognizeAndAnalyzeDocument(pages);
+        const cloud = await cloudForLocalOcr(analysis.text, pendingAsset?.name ?? t('add.image'), pages);
         setPendingAsset({
           uri: pendingAsset?.uri ?? pages[0],
           name: pendingAsset?.name ?? `${t('add.image')}.jpg`,
@@ -135,6 +172,7 @@ export default function ScanReviewScreen() {
           analysis,
           ocrStatus: analysis.ocrStatus,
           ocrPageResults: analysis.pageResults,
+          ...cloud,
         });
       } catch {
         // A recognition failure must not prevent the user from filing a scan.
@@ -151,6 +189,7 @@ export default function ScanReviewScreen() {
             status: 'failed',
             text: '',
           })),
+            cloudState: cloudOptIn ? 'unavailable' : 'offline',
         });
       }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -272,6 +311,50 @@ export default function ScanReviewScreen() {
             <Text style={[styles.qualityText, { color: colors.sageDeep }]}>{t('scan.nativeText', { count: MAX_SCAN_PAGES })}</Text>
           </View>
         </View> : null}
+        {savedDiagnostics.length ? (
+          <View style={[styles.pageQualityList, { borderColor: colors.border, backgroundColor: colors.card }]} testID="scan-page-quality">
+            {savedDiagnostics.map((diagnostic, index) => (
+              <View key={index} style={[styles.pageQualityRow, { borderBottomColor: colors.border }]}>
+                <View style={styles.qualityCopy}>
+                  <Text style={[styles.qualityTitle, { color: colors.navy }]}>{t('common.page')} {index + 1}</Text>
+                  <Text style={[styles.qualityText, { color: colors.mutedForeground }]}>
+                    {t('scan.processed')} · {Math.round((diagnostic.blur ?? 0) * 100)}% · {diagnostic.exposure ?? t('common.unknown')} · {diagnostic.readability ?? t('common.unknown')}
+                  </Text>
+                  {diagnostic.warnings.slice(0, 1).map((warning) => <Text key={warning} style={[styles.qualityText, { color: colors.coral }]}>{warning}</Text>)}
+                </View>
+                {diagnostic.retakeRecommended ? (
+                  <Pressable onPress={() => void scanMore(index)} disabled={busy} style={[styles.retakeButton, { borderColor: colors.coral }]}>
+                    <Text style={[styles.retakeText, { color: colors.coral }]}>{t('scan.rescan')}</Text>
+                  </Pressable>
+                ) : <Feather name="check-circle" size={17} color={colors.sageDeep} />}
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        <Pressable
+          onPress={() => {
+            setCloudOptIn((current) => !current);
+            setCloudState('offline');
+          }}
+          disabled={busy}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: cloudOptIn }}
+          accessibilityLabel={`${t('security.cloud')} ${t('security.ai')}`}
+          style={[styles.cloudCard, { backgroundColor: cloudOptIn ? colors.coralSoft : colors.card, borderColor: cloudOptIn ? colors.coral : colors.border }, busy && styles.disabled]}
+          testID="cloud-intelligence-opt-in"
+        >
+          <Feather name={cloudOptIn ? 'cloud' : 'smartphone'} size={17} color={cloudOptIn ? colors.coral : colors.navy} />
+          <View style={styles.qualityCopy}>
+            <Text style={[styles.qualityTitle, { color: colors.navy }]}>{t('security.cloud')} · {t('security.ai')}</Text>
+            <Text style={[styles.qualityText, { color: colors.mutedForeground }]}>
+              {cloudOptIn ? t('common.open') : t('explanation.localOnly')}
+            </Text>
+          </View>
+          <Text style={[styles.cloudState, { color: cloudState === 'unavailable' || cloudState === 'quota' ? colors.coral : cloudOptIn ? colors.sageDeep : colors.mutedForeground }]}>
+            {cloudState === 'cloud' ? t('common.open') : cloudState === 'quota' || cloudState === 'unavailable' ? t('details.analysisUnavailable') : t('common.none')}
+          </Text>
+        </Pressable>
 
         {error ? <Text style={[styles.error, { color: colors.coral }]}>{error}</Text> : null}
 
@@ -324,6 +407,12 @@ const styles = StyleSheet.create({
   qualityCopy: { flex: 1, marginLeft: 10 },
   qualityTitle: { fontSize: 11, fontFamily: 'Inter_700Bold', marginBottom: 4 },
   qualityText: { fontSize: 10, lineHeight: 15, fontFamily: 'Inter_400Regular' },
+  cloudCard: { borderWidth: 1, borderRadius: 18, padding: 13, flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
+  cloudState: { fontSize: 9, fontFamily: 'Inter_700Bold', maxWidth: 76, textAlign: 'right' },
+  pageQualityList: { borderWidth: 1, borderRadius: 18, paddingHorizontal: 12, marginBottom: 15 },
+  pageQualityRow: { minHeight: 62, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: StyleSheet.hairlineWidth },
+  retakeButton: { borderWidth: 1, borderRadius: 9, paddingHorizontal: 8, paddingVertical: 7 },
+  retakeText: { fontSize: 9, fontFamily: 'Inter_700Bold' },
   error: { fontSize: 11, lineHeight: 17, fontFamily: 'Inter_600SemiBold', marginBottom: 12 },
   addPageButton: { minHeight: 52, borderWidth: 1, borderRadius: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 10 },
   addPageText: { fontSize: 12, fontFamily: 'Inter_700Bold' },

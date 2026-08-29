@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="hu">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>APP_NAME_PLACEHOLDER · Android teszttelepítés</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #1d2725;
+        --muted: #64716d;
+        --paper: #f8f7f3;
+        --card: #ffffff;
+        --line: #dce3df;
+        --accent: #d9684b;
+        --accent-dark: #a94832;
+        --soft-accent: #fff0ea;
+        --success: #2d745b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top right, #f7dfd3 0, transparent 34rem),
+          var(--paper);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+
+      main {
+        width: min(100% - 32px, 600px);
+        margin: 0 auto;
+        padding: 48px 0 64px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--ink);
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .brand-mark {
+        width: 28px;
+        height: 28px;
+        border-radius: 9px;
+        background: var(--accent);
+        box-shadow: 0 5px 14px rgb(217 104 75 / 22%);
+      }
+
+      h1 {
+        max-width: 12ch;
+        margin: 28px 0 14px;
+        font-size: clamp(2.2rem, 9vw, 4rem);
+        line-height: 0.98;
+        letter-spacing: -0.06em;
+      }
+
+      .lede {
+        max-width: 46ch;
+        margin: 0;
+        color: var(--muted);
+        font-size: 1.05rem;
+      }
+
+      .card {
+        margin-top: 32px;
+        padding: 24px;
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        background: rgb(255 255 255 / 86%);
+        box-shadow: 0 18px 50px rgb(29 39 37 / 8%);
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        border-radius: 999px;
+        background: var(--soft-accent);
+        color: var(--accent-dark);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .badge::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+        content: "";
+      }
+
+      .download {
+        display: block;
+        margin-top: 20px;
+        padding: 17px 20px;
+        border-radius: 14px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 1rem;
+        font-weight: 800;
+        text-align: center;
+        text-decoration: none;
+        box-shadow: 0 9px 20px rgb(217 104 75 / 25%);
+      }
+
+      .download:hover,
+      .download:focus-visible {
+        background: var(--accent-dark);
+      }
+
+      .download:focus-visible {
+        outline: 3px solid #f1b7a4;
+        outline-offset: 3px;
+      }
+
+      .hint {
+        margin: 12px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        text-align: center;
+      }
+
+      .details {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin: 24px 0 0;
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
+      }
+
+      .detail-label {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .detail-value {
+        display: block;
+        margin-top: 3px;
+        font-size: 14px;
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+
+      h2 {
+        margin: 34px 0 12px;
+        font-size: 1.15rem;
+        letter-spacing: -0.02em;
+      }
+
+      ol {
+        margin: 0;
+        padding-left: 24px;
+        color: var(--muted);
+      }
+
+      li {
+        margin: 10px 0;
+        padding-left: 4px;
+      }
+
+      li strong {
+        color: var(--ink);
+      }
+
+      .notice {
+        margin-top: 24px;
+        padding: 15px 16px;
+        border-left: 3px solid var(--success);
+        border-radius: 0 12px 12px 0;
+        background: #edf7f1;
+        color: #285b49;
+        font-size: 13px;
+      }
+
+      footer {
+        margin-top: 20px;
+        color: var(--muted);
+        font-size: 12px;
+        text-align: center;
+      }
+
+      @media (max-width: 420px) {
+        main {
+          width: min(100% - 24px, 600px);
+          padding-top: 32px;
+        }
+
+        .card {
+          padding: 20px;
+          border-radius: 20px;
+        }
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --ink: #edf3ef;
+          --muted: #a2b0aa;
+          --paper: #111715;
+          --card: #1a211e;
+          --line: #35413b;
+          --soft-accent: #3a211b;
+        }
+
+        body {
+          background:
+            radial-gradient(circle at top right, #3b211a 0, transparent 32rem),
+            var(--paper);
+        }
+
+        .card {
+          background: rgb(26 33 30 / 90%);
+          box-shadow: 0 18px 50px rgb(0 0 0 / 20%);
+        }
+
+        .notice {
+          background: #173229;
+          color: #b8e1cb;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Documenta</span>
+      </div>
+
+      <h1>Android teszttelepítés</h1>
+      <p class="lede">
+        Ez a Documenta Development Build belső teszteléshez készült Samsung és
+        más Android készülékekre.
+      </p>
+
+      <section class="card" aria-labelledby="download-title">
+        <span class="badge">Internal distribution</span>
+        <h2 id="download-title">1. Töltsd le az APK-t</h2>
+        <a
+          class="download"
+          href="APK_URL_ATTRIBUTE_PLACEHOLDER"
+          download="documenta-development.apk"
+          rel="noopener noreferrer"
+        >
+          APK letöltése
+        </a>
+        <p class="hint">
+          Androidon a letöltés után nyisd meg az értesítést, majd válaszd a
+          Telepítés lehetőséget.
+        </p>
+
+        <div class="details" aria-label="Build adatai">
+          <div>
+            <span class="detail-label">Build</span>
+            <span class="detail-value">82bf5af1</span>
+          </div>
+          <div>
+            <span class="detail-label">Formátum</span>
+            <span class="detail-value">Android APK</span>
+          </div>
+          <div>
+            <span class="detail-label">Csomag</span>
+            <span class="detail-value">com.documenta.app</span>
+          </div>
+          <div>
+            <span class="detail-label">Verzió</span>
+            <span class="detail-value">1.0.0 (1)</span>
+          </div>
+        </div>
+
+        <h2>2. Telepítsd a Samsungon</h2>
+        <ol>
+          <li><strong>Letöltés:</strong> nyomd meg az APK letöltése gombot.</li>
+          <li>
+            <strong>Engedély:</strong> ha a Samsung blokkolja, engedélyezd a
+            böngésző számára az ismeretlen alkalmazások telepítését.
+          </li>
+          <li>
+            <strong>Telepítés:</strong> nyisd meg a letöltött APK-t, majd
+            erősítsd meg a telepítést.
+          </li>
+          <li>
+            <strong>Indítás:</strong> nyisd meg a Documentát, és navigálj a
+            Security / Backup &amp; Recovery képernyőre.
+          </li>
+        </ol>
+
+        <div class="notice">
+          Ez nem Play Store-verzió, hanem belső Development Build. A linket és
+          az APK-t csak az engedélyezett tesztkészüléken használd.
+        </div>
+      </section>
+
+      <footer>
+        A build az EAS internal distribution artifactja. A telepítés után a
+        Google Drive live teszt külön, fizikai eszközön futtatandó.
+      </footer>
+    </main>
+
+  </body>
+</html>
