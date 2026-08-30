@@ -4,9 +4,19 @@ const ESSENTIALS = new Set(["sender", "recipient", "person", "invoiceNumber", "c
 
 function field(name: string, source: string, start: number, end: number): ParsedField | undefined {
   const value = source.slice(start, end);
+  const normalizedValue = normalizedCandidate(name, value);
   return value && value === value.trim() && ESSENTIALS.has(name)
-    ? { name, value, confidence: 0.92, validationState: "PARTIALLY_VALIDATED", provenance: "deterministic", evidence: [{ text: value, start, end, pageIndex: 0 }] }
+    ? { name, value, ...(normalizedValue !== value ? { normalizedValue } : {}), confidence: 0.92, validationState: "PARTIALLY_VALIDATED", provenance: "deterministic", evidence: [{ text: value, start, end, pageIndex: 0 }] }
     : undefined;
+}
+
+function normalizedCandidate(name: string, value: string) {
+  if (name === "documentDate" || name === "dueDate") {
+    const match = value.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+    if (match) return `${match[3]}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}`;
+  }
+  if (name === "sender" || name === "recipient" || name === "person") return value.replace(/\s+/g, " ").trim();
+  return value;
 }
 
 /** Conservative invoice-only extraction. Every returned value is an unmodified OCR span. */

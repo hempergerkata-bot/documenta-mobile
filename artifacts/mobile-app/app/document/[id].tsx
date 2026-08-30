@@ -70,7 +70,7 @@ export default function SavedDocumentDetailScreen() {
   }[field] ?? field);
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
-    const { activeDocuments: documents, updateDocument, profiles, relationships, cases, archiveDocument, trashDocument, addRelationship, updateCase, documentTimeline } = useApp();
+    const { documents, updateDocument, profiles, relationships, cases, archiveDocument, trashDocument, addRelationship, updateCase, documentTimeline } = useApp();
   const [fullScreen, setFullScreen] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
   const [originalPageIndex, setOriginalPageIndex] = useState(0);
@@ -106,25 +106,33 @@ export default function SavedDocumentDetailScreen() {
   const openEdit = () => { if (!document) return; setEdit({ title: document.title, sender: document.sender, documentType: document.documentType, documentDate: document.documentDate, receivedDate: document.receivedDate ?? '', relevantPeriodStart: document.relevantPeriodStart ?? '', relevantPeriodEnd: document.relevantPeriodEnd ?? '', archiveYear: document.archiveYear?.toString() ?? '', dueDate: document.dueDate ?? '', amount: document.amount ?? '', tags: document.tags.join(', '), note: document.note ?? '', category: document.category, status: document.status, profileIds: document.profileIds ?? [] }); setEditing(true); };
   const saveEdit = () => {
     if (!document || !edit.title.trim() || !edit.profileIds.length) return;
-    const intelligenceReviewDecisions = Object.fromEntries(
-      Object.entries(document.intelligenceReviewDecisions ?? {}).map(([field, decision]) => [field, decision === 'edit' ? 'accept' : decision]),
-    ) as Record<string, ReviewDecision>;
     const { archiveYear: archiveYearInput, ...editFields } = edit;
-    const correctedBase = { ...document, ...editFields, title: edit.title.trim(), sender: edit.sender.trim(), receivedDate: normalizeDocumentDate(edit.receivedDate.trim()), relevantPeriodStart: normalizeDocumentDate(edit.relevantPeriodStart.trim()), relevantPeriodEnd: normalizeDocumentDate(edit.relevantPeriodEnd.trim()), tags: edit.tags.split(',').map((tag) => tag.trim()).filter(Boolean), dueDate: normalizeDocumentDate(edit.dueDate.trim()), amount: edit.amount.trim() || undefined, note: edit.note.trim() || undefined, person: profiles.find((profile) => profile.id === edit.profileIds[0])?.name ?? document.person, intelligenceReviewDecisions };
     const selectedArchiveYear = Number(archiveYearInput);
-    const corrected = selectedArchiveYear >= 1900 && selectedArchiveYear <= new Date().getUTCFullYear() + 1
-      ? applyArchiveReview(correctedBase, { archiveYear: selectedArchiveYear, reviewStatus: 'corrected', at: new Date().toISOString(), reason: 'corrected' })
-      : correctedBase;
-    const recalculated = document.ocrText ? analyzeDocumentIntelligence({ text: document.ocrText, structuredFields: { ...document.structuredFields, sender: corrected.sender, documentDate: corrected.documentDate, dueDate: corrected.dueDate, amount: corrected.amount, status: corrected.status } }) : undefined;
-    updateDocument({ ...corrected, intelligence: recalculated ? applyReviewDecisions(recalculated, intelligenceReviewDecisions) : document.intelligence });
+    updateDocument({
+      id: document.id,
+      update: (current) => {
+        const intelligenceReviewDecisions = Object.fromEntries(
+          Object.entries(current.intelligenceReviewDecisions ?? {}).map(([field, decision]) => [field, decision === 'edit' ? 'accept' : decision]),
+        ) as Record<string, ReviewDecision>;
+        const correctedBase = { ...current, ...editFields, title: edit.title.trim(), sender: edit.sender.trim(), receivedDate: normalizeDocumentDate(edit.receivedDate.trim()), relevantPeriodStart: normalizeDocumentDate(edit.relevantPeriodStart.trim()), relevantPeriodEnd: normalizeDocumentDate(edit.relevantPeriodEnd.trim()), tags: edit.tags.split(',').map((tag) => tag.trim()).filter(Boolean), dueDate: normalizeDocumentDate(edit.dueDate.trim()), amount: edit.amount.trim() || undefined, note: edit.note.trim() || undefined, person: profiles.find((profile) => profile.id === edit.profileIds[0])?.name ?? current.person, intelligenceReviewDecisions };
+        const corrected = selectedArchiveYear >= 1900 && selectedArchiveYear <= new Date().getUTCFullYear() + 1
+          ? applyArchiveReview(correctedBase, { archiveYear: selectedArchiveYear, reviewStatus: 'corrected', at: new Date().toISOString(), reason: 'corrected' })
+          : correctedBase;
+        const recalculated = current.ocrText ? analyzeDocumentIntelligence({ text: current.ocrText, structuredFields: { ...current.structuredFields, sender: corrected.sender, documentDate: corrected.documentDate, dueDate: corrected.dueDate, amount: corrected.amount, status: corrected.status } }) : undefined;
+        return { ...corrected, intelligence: recalculated ? applyReviewDecisions(recalculated, intelligenceReviewDecisions) : current.intelligence };
+      },
+    });
     setEditing(false);
   };
   const setReviewDecision = (field: string, decision: ReviewDecision) => {
     if (!document || !intelligence) return;
     updateDocument({
-      ...document,
-      intelligenceReviewDecisions: { ...document.intelligenceReviewDecisions, [field]: decision },
-      intelligence: applyReviewDecision(intelligence, field, decision),
+      id: document.id,
+      update: (current) => ({
+        ...current,
+        intelligenceReviewDecisions: { ...current.intelligenceReviewDecisions, [field]: decision },
+        intelligence: current.intelligence ? applyReviewDecision(current.intelligence, field, decision) : current.intelligence,
+      }),
     });
   };
   const confirmLifecycleAction = (title: string, message: string, confirmLabel: string, destructive: boolean, action: () => void) => {
@@ -197,7 +205,7 @@ export default function SavedDocumentDetailScreen() {
             <Pressable onPress={openEdit} style={[styles.backButton, { backgroundColor: colors.coralSoft, borderColor: colors.border }]} accessibilityLabel={t('common.edit')}>
               <Feather name="edit-2" size={18} color={colors.coral} />
             </Pressable>
-            <Pressable onPress={() => updateDocument({ ...document, status: document.status === 'Abgeschlossen' ? 'Gelesen' : 'Abgeschlossen' })} style={[styles.backButton, { backgroundColor: colors.sage, borderColor: colors.border }]} accessibilityLabel={t('common.status')}>
+            <Pressable onPress={() => updateDocument({ id: document.id, update: (current) => ({ ...current, status: current.status === 'Abgeschlossen' ? 'Gelesen' : 'Abgeschlossen' }) })} style={[styles.backButton, { backgroundColor: colors.sage, borderColor: colors.border }]} accessibilityLabel={t('common.status')}>
               <Feather name="check" size={19} color={colors.sageDeep} />
             </Pressable>
             <View style={styles.headerCopy}>

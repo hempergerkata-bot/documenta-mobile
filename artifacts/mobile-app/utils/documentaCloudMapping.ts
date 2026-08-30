@@ -1,7 +1,7 @@
 import type { DocumentIntelligenceResult, Evidence, Fact } from './documentIntelligence';
 
 export type CloudEvidence = { text: string; start: number; end: number; pageIndex?: number };
-export type CloudFact = { value: string; confidence: number; validationState: string; provenance?: 'model' | 'deterministic' | 'model+deterministic'; evidence: CloudEvidence[] };
+export type CloudFact = { value: string; normalizedValue?: string; confidence: number; validationState: string; provenance?: 'model' | 'deterministic' | 'model+deterministic'; evidence: CloudEvidence[] };
 export type CloudOcrPage = { pageIndex: number; text: string };
 export type CloudOcrResult = { text: string; pages: CloudOcrPage[] };
 export type CloudIntelligence = { family: string; type: string; summary?: string; confidence: number; validationState?: string; model?: string; fields?: Record<string, CloudFact>; ocrPages?: CloudOcrPage[]; sourceText?: string };
@@ -189,6 +189,12 @@ export function normalizeCloudFields(value: unknown): Record<string, CloudFact> 
     recipient_name: 'recipient',
     invoice_number: 'invoiceNumber',
     customer_number: 'customerNumber',
+    reference_number: 'referenceNumber',
+    contract_number: 'contractNumber',
+    insurance_number: 'insuranceNumber',
+    tax_number: 'taxNumber',
+    patient_number: 'patientNumber',
+    school_reference: 'schoolReference',
     invoice_date: 'documentDate',
     document_date: 'documentDate',
     due_date: 'dueDate',
@@ -196,10 +202,14 @@ export function normalizeCloudFields(value: unknown): Record<string, CloudFact> 
     net_amount: 'netAmount',
     vat_amount: 'vatAmount',
     payment_terms: 'paymentTerms',
+    document_type: 'documentType',
+    document_category: 'category',
+    sub_category: 'subcategory',
+    payroll_period: 'payrollPeriod',
   } as Record<string, string>)[name] ?? name;
   const entries = Array.isArray(value)
     ? value.map((item) => {
-       const field = item && typeof item === 'object' ? item as { name?: unknown; value?: unknown; confidence?: unknown; validationState?: unknown; provenance?: unknown; evidence?: unknown } : {};
+       const field = item && typeof item === 'object' ? item as { name?: unknown; value?: unknown; normalizedValue?: unknown; confidence?: unknown; validationState?: unknown; provenance?: unknown; evidence?: unknown } : {};
       return [typeof field.name === 'string' ? canonicalFieldName(field.name) : field.name, field] as const;
     })
     : value && typeof value === 'object'
@@ -208,7 +218,7 @@ export function normalizeCloudFields(value: unknown): Record<string, CloudFact> 
   const fields: Record<string, CloudFact> = {};
   for (const [name, raw] of entries) {
     if (typeof name !== 'string' || !name || !raw || typeof raw !== 'object') continue;
-    const field = raw as { value?: unknown; confidence?: unknown; validationState?: unknown; provenance?: unknown; evidence?: unknown };
+    const field = raw as { value?: unknown; normalizedValue?: unknown; confidence?: unknown; validationState?: unknown; provenance?: unknown; evidence?: unknown };
     if (typeof field.value !== 'string' || typeof field.confidence !== 'number' || typeof field.validationState !== 'string' || !Array.isArray(field.evidence)) continue;
     const evidence = field.evidence.flatMap((item): CloudEvidence[] => {
       if (!item || typeof item !== 'object') return [];
@@ -221,6 +231,7 @@ export function normalizeCloudFields(value: unknown): Record<string, CloudFact> 
     });
     fields[name] = {
       value: field.value, confidence: field.confidence, validationState: field.validationState, evidence,
+      ...(typeof field.normalizedValue === 'string' && field.normalizedValue.trim() ? { normalizedValue: field.normalizedValue.trim() } : {}),
       ...(field.provenance === 'model' || field.provenance === 'deterministic' || field.provenance === 'model+deterministic' ? { provenance: field.provenance } : {}),
     };
   }
@@ -262,7 +273,38 @@ function safeCloudFact(value: unknown, ocrText: string): Fact<string> | undefine
   return evidence.length ? { value: item.value, confidence: 'high', evidence, validation: 'valid' } : undefined;
 }
 
-export type CloudReviewSuggestion = { value: string; provenance: 'cloud_evidence' };
+export type CloudReviewSuggestion = { value: string; provenance: 'cloud_evidence' | 'cloud_classification'; autoFill?: true };
+
+const CLOUD_CATEGORY_TO_REVIEW_CATEGORY: Record<string, string> = {
+  finance: 'Finanzen',
+  insurance: 'Versicherung',
+  authority: 'Behörden',
+  work: 'Arbeit & Bildung',
+  education: 'Arbeit & Bildung',
+  contract: 'Verträge',
+  health: 'Gesundheit',
+  housing: 'Wohnen',
+  banking: 'Bank',
+  tax: 'Steuern',
+  utilities: 'Wohnen',
+  telecom: 'Verträge',
+  transport: 'Auto',
+  legal: 'Behörden',
+  identity: 'Behörden',
+  family: 'Familie',
+  correspondence: 'Sonstiges',
+};
+
+const CLOUD_TYPE_TO_REVIEW_TYPE: Record<string, string> = {
+  invoice: 'Rechnung',
+  payroll: 'Lohnabrechnung / Gehaltsabrechnung',
+  bank_document: 'Kontoauszug',
+  insurance_letter: 'Versicherungsbrief',
+  authority_decision: 'Bescheid',
+  contract: 'Vertrag',
+  notice: 'Brief',
+  letter: 'Brief',
+};
 
 function safeCloudReviewFact(value: unknown, ocrText: string): value is CloudFact {
   if (!value || typeof value !== 'object') return false;
@@ -281,10 +323,58 @@ function safeCloudReviewFact(value: unknown, ocrText: string): value is CloudFac
 export function cloudReviewSuggestions(cloud: CloudIntelligence | undefined, ocrText: string): Record<string, CloudReviewSuggestion> {
   const suggestions: Record<string, CloudReviewSuggestion> = {};
   for (const [name, fact] of Object.entries(cloud?.fields ?? {})) {
-    if (!/^(sender|recipient|invoiceNumber|customerNumber|documentDate|dueDate|amount|netAmount|vatAmount|paymentTerms)$/i.test(name)) continue;
-    if (safeCloudReviewFact(fact, ocrText)) suggestions[name] = { value: fact.value, provenance: 'cloud_evidence' };
+    // These values are candidates for the review form, never a silent model
+    // assertion.  `safeCloudReviewFact` below still requires an exact OCR
+    // span, a high confidence score and a validated state.
+    if (!/^(title|sender|recipient|category|subcategory|documentType|subtype|purpose|invoiceNumber|customerNumber|referenceNumber|contractNumber|insuranceNumber|iban|bic|taxNumber|patientNumber|schoolReference|documentDate|dueDate|amount|currency|netAmount|vatAmount|paymentTerms|payrollPeriod|person|status)$/i.test(name)) continue;
+    if (safeCloudReviewFact(fact, ocrText)) {
+      const deterministic = fact.provenance === 'deterministic' || fact.provenance === 'model+deterministic';
+      suggestions[name] = {
+        value: deterministic && fact.normalizedValue ? fact.normalizedValue : fact.value,
+        provenance: 'cloud_evidence',
+        ...(deterministic && fact.validationState === 'VALIDATED' ? { autoFill: true as const } : {}),
+      };
+    }
+  }
+  // Family/type are semantic classifications rather than literal substrings.
+  // They may fill blank review fields but never overwrite a local/user value.
+  if ((cloud?.confidence ?? 0) >= 0.75) {
+    if (cloud?.family?.trim() && cloud.family !== 'unknown/novel') {
+      const value = CLOUD_CATEGORY_TO_REVIEW_CATEGORY[cloud.family.trim().toLowerCase()];
+      if (value) suggestions.category = { value, provenance: 'cloud_classification' };
+    }
+    if (cloud?.type?.trim() && cloud.type !== 'unknown') {
+      const value = CLOUD_TYPE_TO_REVIEW_TYPE[cloud.type.trim().toLowerCase()];
+      if (value) suggestions.documentType = { value, provenance: 'cloud_classification' };
+    }
   }
   return suggestions;
+}
+
+/**
+ * Applies evidence-backed cloud candidates only to blanks. This is shared by
+ * the edit screen and delayed completion handling so a cloud response can
+ * enrich a saved scan without replacing a value the person already reviewed.
+ */
+export function mergeCloudReviewValues<T extends Record<string, string | undefined>>(
+  current: T,
+  cloud: CloudIntelligence | undefined,
+  ocrText: string,
+): { values: T; conflicts: string[] } {
+  const suggestions = cloudReviewSuggestions(cloud, ocrText);
+  const values: Record<string, string | undefined> = { ...current };
+  const conflicts: string[] = [];
+  for (const [field, suggestion] of Object.entries(suggestions)) {
+    const existing = values[field];
+    if (!existing?.trim() && suggestion.autoFill) {
+      values[field] = suggestion.value;
+    } else if ((!existing?.trim() || existing.trim() !== suggestion.value.trim()) && !suggestion.autoFill) {
+      conflicts.push(field);
+    } else if (existing?.trim() !== suggestion.value.trim()) {
+      conflicts.push(field);
+    }
+  }
+  return { values: values as T, conflicts };
 }
 
 /** Model prose is never canonical. Only trusted evidence-backed non-sensitive facts may refine local intelligence. */

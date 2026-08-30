@@ -22,7 +22,9 @@ const MONTHLY_REQUEST_LIMIT = 400;
 const GLOBAL_DAILY_PROVIDER_LIMIT = 500;
 const GLOBAL_MONTHLY_PROVIDER_LIMIT = 8_000;
 const SESSION_LIFETIME_SECONDS = 24 * 60 * 60;
-const DOCUMENT_FAMILIES = ["identity", "financial", "insurance", "medical", "legal", "government", "employment", "education", "housing", "utilities", "travel", "vehicle", "tax", "commerce", "communication", "membership", "other"] as const;
+// Kept aligned with the mobile document-intelligence taxonomy. Unknown input is
+// retained as `unknown/novel` rather than fabricated as a known category.
+const DOCUMENT_FAMILIES = ["finance", "insurance", "authority", "work", "contract", "health", "education", "housing", "banking", "tax", "utilities", "telecom", "transport", "legal", "identity", "family", "correspondence"] as const;
 type Family = (typeof DOCUMENT_FAMILIES)[number] | "unknown/novel";
 type PaidProvider = "google_document_ai" | "gemini_flash" | "gemini_pro";
 
@@ -100,26 +102,32 @@ export function validIban(value: string) {
   for (const char of moved) for (const digit of (/[A-Z]/.test(char) ? String(char.charCodeAt(0) - 55) : char)) remainder = (remainder * 10 + Number(digit)) % 97;
   return remainder === 1;
 }
+function documentAiConfigured() {
+  const processorName = process.env.GOOGLE_DOCUMENT_AI_PROCESSOR_NAME;
+  const credentialsJson = process.env.GOOGLE_CLOUD_SERVICE_ACCOUNT_JSON;
+  if (!processorName || !credentialsJson || !/^projects\/[^/]+\/locations\/[a-z0-9-]+\/processors\/[^/]+$/i.test(processorName)) return false;
+  try { return !!JSON.parse(credentialsJson); } catch { return false; }
+}
+function geminiConfigured() {
+  return typeof process.env.GEMINI_API_KEY === "string" && process.env.GEMINI_API_KEY.trim().length > 0;
+}
 function classify(input: string): { family: Family; type: string; confidence: number } {
   const lower = input.toLowerCase();
   const rules: Array<[Family, string, RegExp]> = [
-    ["medical", "medical_document", /\b(patient|diagnosis|prescription|referral|laboratory|orvos|recept|beutaló|befund|arzt|rezept)\b/i],
-    ["government", "authority_notice", /\b(authority|official notice|hatóság|határozat|bescheid|behörde|antrag)\b/i],
-    ["legal", "fine_or_legal_document", /\b(court|fine|penalty|appeal|bíróság|bírság|fellebbezés|gericht|bußgeld|einspruch)\b/i],
-    ["commerce", "receipt", /\b(receipt|cash register|nyugta|blokk|kassenbon|quittung)\b/i],
-    ["commerce", "product_or_warranty", /\b(warranty|serial number|repair|garancia|jótállás|javítás|garantie|seriennummer|reparatur)\b/i],
-    ["commerce", "online_order", /\b(order confirmation|shipping|return|refund|rendelés|szállítás|visszaküldés|bestellung|versand|retoure)\b/i],
-    ["financial", "invoice", /\b(invoice|rechnung|számla)\b/i],
-    ["financial", "financial_document", /\b(bank statement|loan|credit|iban|bankszámla|hitel|kontoauszug|darlehen|kredit)\b/i],
-    ["employment", "hr_document", /\b(salary|employment|payslip|munkaviszony|fizetési jegyzék|gehalt|arbeitsvertrag|lohnabrechnung)\b/i],
+    ["work", "payroll", /\b(lohnabrechnung|gehaltsabrechnung|salary|payslip|fizetési jegyzék)\b/i],
+    ["health", "medical_document", /\b(patient|diagnosis|prescription|referral|laboratory|orvos|recept|beutaló|befund|arzt|rezept)\b/i],
+    ["authority", "authority_decision", /\b(authority|official notice|hatóság|határozat|bescheid|behörde|antrag)\b/i],
+    ["legal", "legal_document", /\b(court|fine|penalty|appeal|bíróság|bírság|fellebbezés|gericht|bußgeld|einspruch)\b/i],
+    ["finance", "invoice", /\b(invoice|rechnung|számla)\b/i],
+    ["banking", "bank_document", /\b(bank statement|loan|credit|iban|bankszámla|hitel|kontoauszug|darlehen|kredit)\b/i],
+    ["work", "work_document", /\b(employment|munkaviszony|arbeitsvertrag|arbeitgeber)\b/i],
     ["tax", "tax_document", /\b(tax|adó|steuer|finanzamt)\b/i],
-    ["insurance", "insurance_document", /\b(insurance|policy|claim|biztosítás|kárigény|versicherung|police|schaden)\b/i],
-    ["legal", "contract", /\b(contract|agreement|termination|szerződés|felmondás|vertrag|kündigung|vereinbarung)\b/i],
-    ["housing", "real_estate_document", /\b(lease|rent|property|bérlet|ingatlan|mietvertrag|miete|immobilie)\b/i],
-    ["education", "education_document", /\b(school|university|certificate|iskola|egyetem|bizonyítvány|schule|universität|zeugnis)\b/i],
-    ["utilities", "utility_bill", /\b(utility|közmű|kwh|strom|erdgas|gasrechnung)\b/i],
-    ["travel", "logistics_document", /\b(tracking|delivery note|consignment|fuvarlevél|kézbesítés|sendung|lieferschein)\b/i],
-    ["vehicle", "vehicle_document", /\b(vehicle|registration|service record|jármű|forgalmi|gépjármű|fahrzeug|zulassung|hauptuntersuchung)\b/i],
+    ["insurance", "insurance_letter", /\b(insurance|policy|claim|biztosítás|kárigény|versicherung|police|schaden)\b/i],
+    ["contract", "contract", /\b(contract|agreement|termination|szerződés|felmondás|vertrag|kündigung|vereinbarung)\b/i],
+    ["housing", "rental_housing", /\b(lease|rent|property|bérlet|ingatlan|mietvertrag|miete|immobilie)\b/i],
+    ["education", "school_kita", /\b(school|university|certificate|iskola|egyetem|bizonyítvány|schule|universität|zeugnis)\b/i],
+    ["utilities", "utility_invoice", /\b(utility|közmű|kwh|strom|erdgas|gasrechnung)\b/i],
+    ["transport", "transport_document", /\b(tracking|delivery note|consignment|fuvarlevél|kézbesítés|sendung|lieferschein|vehicle|registration|service record|jármű|forgalmi|gépjármű|fahrzeug|zulassung|hauptuntersuchung)\b/i],
   ];
   const match = rules.find((rule) => rule[2].test(lower));
   return match ? { family: match[0], type: match[1], confidence: 0.72 } : { family: "unknown/novel", type: "unknown/novel", confidence: 0.3 };
@@ -154,7 +162,7 @@ function readCloudPages(value: unknown): CloudPage[] | undefined {
 async function documentAiOcr(userId: string, pages: CloudPage[], operationPrefix: string) {
   const processorName = process.env.GOOGLE_DOCUMENT_AI_PROCESSOR_NAME;
   const credentialsJson = process.env.GOOGLE_CLOUD_SERVICE_ACCOUNT_JSON;
-  if (!processorName || !credentialsJson) throw new Error("document_ai_not_configured");
+  if (!processorName || !credentialsJson || !documentAiConfigured()) throw new Error("document_ai_not_configured");
   let credentials: object;
   try { credentials = JSON.parse(credentialsJson) as object; } catch { throw new Error("document_ai_not_configured"); }
   try {
@@ -222,7 +230,7 @@ async function settleProvider(id: string, state: "SUCCEEDED" | "FAILED_RELEASED"
 }
 async function callGemini(userId: string, operationId: string, ocrText: string, usePro: boolean, correctionHints: string[] = []) {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("gemini_not_configured");
+  if (!geminiConfigured() || !apiKey) throw new Error("gemini_not_configured");
   // Keep the SDK server-only. Indirect dynamic import also makes a missing optional
   // deployment dependency an explicit runtime cloud error rather than client bundling.
   const { GoogleGenAI } = await (new Function("specifier", "return import(specifier)")("@google/genai") as Promise<{ GoogleGenAI: new (options: { apiKey: string }) => { models: { generateContent: (input: unknown) => Promise<{ text?: string }> } } }>);
@@ -230,7 +238,7 @@ async function callGemini(userId: string, operationId: string, ocrText: string, 
   // API keys at generation time. Keep these names aligned with models that the
   // configured project can actually invoke.
   const model = usePro ? "gemini-3.1-pro-preview" : "gemini-3.6-flash";
-  const prompt = `Return only JSON matching this schema: {"family": one of ${JSON.stringify(DOCUMENT_FAMILIES)}, "type":string, "summary":string, "confidence":number 0..1, "fields":[{"name":string,"value":string,"confidence":number 0..1,"validationState":"UNVALIDATED"|"PARTIALLY_VALIDATED"|"VALIDATED"|"INVALID","evidence":[{"text":string,"start":integer,"end":integer,"pageIndex":integer}]}]}. family MUST be one listed value, never unknown/novel. For EVERY field, value must be the literal OCR substring (no trimming, normalization, or inferred text), and evidence.text must exactly equal OCR.slice(start,end), using JavaScript UTF-16 offsets into the complete OCR string. Omit any field you cannot support with one exact span. Do not infer facts absent from OCR. Hints may improve labels but cannot add facts: ${correctionHints.join(", ").slice(0, 2000)}\nOCR:\n${ocrText}`;
+  const prompt = `Return only JSON matching this schema: {"family": one of ${JSON.stringify(DOCUMENT_FAMILIES)}, "type":string, "summary":string, "confidence":number 0..1, "fields":[{"name":string,"value":string,"normalizedValue":string optional,"confidence":number 0..1,"validationState":"UNVALIDATED"|"PARTIALLY_VALIDATED"|"VALIDATED"|"INVALID","evidence":[{"text":string,"start":integer,"end":integer,"pageIndex":integer}]}]}. family MUST be one listed value. Use mobile taxonomy types such as invoice, payroll, bank_document, insurance_letter, and authority_decision. Every field needs one exact literal OCR span: evidence.text MUST equal OCR.slice(start,end), using JavaScript UTF-16 offsets into this complete OCR string. Keep value literal when possible; if it is normalized, preserve the literal evidence and put the candidate in normalizedValue. Never invent evidence or facts absent from this OCR. Omit any field without an exact span. Hints may improve labels but cannot add facts: ${correctionHints.join(", ").slice(0, 2000)}\nOCR:\n${ocrText}`;
   let lastError: unknown;
   const inputTokens = Math.ceil(prompt.length / 4);
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -304,10 +312,10 @@ router.get("/documenta/cloud-status", async (request, response) => {
     db.select({ requests: sql<number>`count(*)`, proRequests: sql<number>`count(*) filter (where ${documentaProviderUsage.provider} = 'gemini_pro' and ${documentaProviderUsage.state} = 'SUCCEEDED')` }).from(documentaProviderUsage).where(and(eq(documentaProviderUsage.userId, userId), active, gte(documentaProviderUsage.createdAt, monthStart), lt(documentaProviderUsage.createdAt, now))),
   ]);
   response.json({
-    documentAi: process.env.GOOGLE_DOCUMENT_AI_PROCESSOR_NAME && process.env.GOOGLE_CLOUD_SERVICE_ACCOUNT_JSON
+    documentAi: documentAiConfigured()
       ? "CONFIGURED"
       : "NOT_CONFIGURED",
-    gemini: process.env.GEMINI_API_KEY ? "CONFIGURED" : "NOT_CONFIGURED",
+    gemini: geminiConfigured() ? "CONFIGURED" : "NOT_CONFIGURED",
     quota: {
       daily: { limit: DAILY_REQUEST_LIMIT, used: Number(daily?.requests ?? 0), remaining: Math.max(0, DAILY_REQUEST_LIMIT - Number(daily?.requests ?? 0)) },
       monthly: { limit: MONTHLY_REQUEST_LIMIT, used: Number(monthly?.requests ?? 0), remaining: Math.max(0, MONTHLY_REQUEST_LIMIT - Number(monthly?.requests ?? 0)) },
@@ -320,6 +328,9 @@ router.post("/documenta/documents/process", async (request, response) => {
   const body = asObject(request.body); let ocrText = text(body?.ocrText, MAX_TEXT_BYTES); const title = text(body?.title, 255) ?? "Untitled document";
   const cloudOptIn = body?.cloudOptIn === true;
   const processOperationId = randomUUID();
+  // Processing with cloud intelligence is an OCR-to-Gemini transaction: do
+  // not bill Document AI when the required extraction provider is unavailable.
+  if (cloudOptIn && !geminiConfigured()) return error(response, 503, "cloud_not_configured", "Cloud intelligence was requested but GEMINI_API_KEY is not configured.");
   if (hasUnsupportedCloudMime(body?.cloudPages)) return error(response, 415, "unsupported_cloud_mime", "Cloud OCR supports JPEG and PNG images only.");
   const cloudPages = cloudOptIn && body?.cloudPages !== undefined ? readCloudPages(body.cloudPages) : undefined;
   if ((!ocrText && !cloudPages) || (body?.cloudPages !== undefined && !cloudOptIn) || (body?.cloudPages !== undefined && !cloudPages)) return error(response, 400, "invalid_request", `ocrText or bounded cloudPages are required; cloud page content is limited to ${MAX_CLOUD_PAGE_BYTES} bytes.`);
@@ -345,12 +356,12 @@ router.post("/documenta/documents/process", async (request, response) => {
       const flash = await callGemini(request.documentaUserId!, `${processOperationId}:flash`, ocrText, false, hints);
       const confidence = typeof flash.result.confidence === "number" ? flash.result.confidence : 0;
       const family = DOCUMENT_FAMILIES.includes(flash.result.family as (typeof DOCUMENT_FAMILIES)[number]) ? flash.result.family as Family : "unknown/novel";
-       analysis = { family: family === "unknown/novel" ? (local.family === "unknown/novel" ? "other" : local.family) : family, type: text(flash.result.type, 100) ?? local.type, confidence, summary: text(flash.result.summary, 2000), model: flash.model, fields: parseGeminiFields(flash.result.fields, ocrText) };
+       analysis = { family: family === "unknown/novel" ? local.family : family, type: text(flash.result.type, 100) ?? local.type, confidence, summary: text(flash.result.summary, 2000), model: flash.model, fields: parseGeminiFields(flash.result.fields, ocrText) };
       // Pro is only attempted for low-confidence/invalid Flash output; quota remains auditable.
       if (confidence < 0.55 || family === "unknown/novel") {
         try {
           const pro = await callGemini(request.documentaUserId!, `${processOperationId}:pro`, ocrText, true, hints);
-           const proFamily = DOCUMENT_FAMILIES.includes(pro.result.family as (typeof DOCUMENT_FAMILIES)[number]) ? pro.result.family as Family : (local.family === "unknown/novel" ? "other" : local.family);
+           const proFamily = DOCUMENT_FAMILIES.includes(pro.result.family as (typeof DOCUMENT_FAMILIES)[number]) ? pro.result.family as Family : local.family;
            analysis = { family: proFamily, type: text(pro.result.type, 100) ?? local.type, confidence: typeof pro.result.confidence === "number" ? pro.result.confidence : 0, summary: text(pro.result.summary, 2000), model: pro.model, fields: parseGeminiFields(pro.result.fields, ocrText) };
         } catch (caught) {
           if (!(caught instanceof Error && caught.message === "pro_quota_unavailable")) throw caught;
@@ -405,7 +416,7 @@ router.post("/documenta/cloud-ocr", async (request, response) => {
     response.json({ provider: "google_document_ai", pages: ocrText.map((text, pageIndex) => ({ pageIndex, text })), ocrText });
   } catch (caught) {
     const code = caught instanceof Error ? caught.message : "document_ai_failed";
-    error(response, code === "quota_exceeded" ? 429 : code === "document_ai_not_configured" ? 503 : 502, code === "quota_exceeded" ? "quota_exceeded" : code === "document_ai_not_configured" ? "NOT_CONFIGURED" : "cloud_ocr_failed", code === "quota_exceeded" ? "Daily or monthly provider-call limit reached." : code === "document_ai_not_configured" ? "Google Document AI is not configured." : "Google Document AI could not process the supplied pages.");
+    error(response, code === "quota_exceeded" ? 429 : code === "document_ai_not_configured" ? 503 : 502, code === "quota_exceeded" ? "quota_exceeded" : code === "document_ai_not_configured" ? "cloud_not_configured" : "cloud_ocr_failed", code === "quota_exceeded" ? "Daily or monthly provider-call limit reached." : code === "document_ai_not_configured" ? "Google Document AI is not configured." : "Google Document AI could not process the supplied pages.");
   }
 });
 

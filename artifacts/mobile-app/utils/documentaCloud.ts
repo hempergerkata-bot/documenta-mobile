@@ -6,7 +6,7 @@ import { Buffer } from 'buffer';
 import { File } from 'expo-file-system';
 export type { CloudEvidence, CloudFact, CloudIntelligence, CloudOcrPage, CloudOcrResult, CloudPipelineFailure, CloudPipelineFailureReason, CloudPipelineStageState, ScanCloudPipelineResult, ScanCloudPipelineState } from './documentaCloudMapping';
 import { mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline as runPipeline, type CloudIntelligence, type CloudOcrResult } from './documentaCloudMapping';
-export { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline } from './documentaCloudMapping';
+export { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudReviewValues, mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline } from './documentaCloudMapping';
 
 // expo-secure-store permits only alphanumeric characters, ".", "-", and "_".
 const INSTALLATION_KEY = 'documenta.cloud-installation-id';
@@ -173,11 +173,23 @@ export async function processScanCloudPipeline(input: {
 /** Explicitly uploads selected page bytes only; callers must gate this behind opt-in. */
 export async function uploadCloudOcrPages(pageUris: string[]): Promise<CloudOcrResult | undefined> {
   const token = await sessionToken();
-  const pages = await Promise.all(pageUris.map(async (uri, pageIndex) => ({
-    pageIndex,
-    mimeType: uri.toLowerCase().includes('.png') ? 'image/png' : 'image/jpeg',
-    contentBase64: Buffer.from(await new File(uri).bytes()).toString('base64'),
-  })));
+  const pages = await Promise.all(pageUris.map(async (uri, pageIndex) => {
+    if (Platform.OS === 'web') {
+      const response = await fetch(uri);
+      if (!response.ok) throw new DocumentaCloudError('unavailable', 'Selected image could not be read.');
+      const blob = await response.blob();
+      return {
+        pageIndex,
+        mimeType: blob.type === 'image/png' ? 'image/png' as const : 'image/jpeg' as const,
+        contentBase64: Buffer.from(await blob.arrayBuffer()).toString('base64'),
+      };
+    }
+    return {
+      pageIndex,
+      mimeType: uri.toLowerCase().includes('.png') ? 'image/png' as const : 'image/jpeg' as const,
+      contentBase64: Buffer.from(await new File(uri).bytes()).toString('base64'),
+    };
+  }));
   const chunkResults: Array<{ requestedPageIndexes: number[]; result: CloudOcrResult }> = [];
   for (const chunk of planCloudOcrChunks(pages, 5)) {
     let response: Response;

@@ -1,5 +1,5 @@
 import { analyzeDocumentIntelligence } from './documentIntelligence';
-import { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline } from './documentaCloudMapping';
+import { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudOcrChunks, mergeCloudReviewValues, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline } from './documentaCloudMapping';
 
 declare function require(name: string): any;
 const test: (name: string, body: () => void | Promise<void>) => void = require('node:test');
@@ -51,6 +51,7 @@ test('invoice cloud suggestions are exact evidence-backed review values', () => 
   assert.deepEqual(suggestions, {
     invoiceNumber: { value: 'RH-17', provenance: 'cloud_evidence' },
     amount: { value: '119,00 EUR', provenance: 'cloud_evidence' },
+    documentType: { value: 'Rechnung', provenance: 'cloud_classification' },
   });
 });
 
@@ -78,7 +79,47 @@ test('normalizes common Gemini invoice field aliases for review suggestions', ()
   assert.deepEqual(cloudReviewSuggestions({ family: 'financial', type: 'invoice', confidence: 0.98, fields }, source), {
     sender: { value: 'Rosenhof Schultheis e.K.', provenance: 'cloud_evidence' },
     vatAmount: { value: '2,15 EUR', provenance: 'cloud_evidence' },
+    documentType: { value: 'Rechnung', provenance: 'cloud_classification' },
   });
+});
+
+test('evidence-backed cloud values fill blank canonical fields and flag conflicts without overwriting them', () => {
+  const text = 'Sender: Rosenhof GmbH\nDue date: 20.01.2025';
+  const fields = normalizeCloudFields([
+    { name: 'vendor_name', value: 'Rosenhof GmbH', confidence: .95, validationState: 'VALIDATED', provenance: 'deterministic', evidence: [{ text: 'Rosenhof GmbH', start: 8, end: 21 }] },
+    { name: 'due_date', value: '20.01.2025', confidence: .95, validationState: 'VALIDATED', evidence: [{ text: '20.01.2025', start: 32, end: 42 }] },
+  ]);
+  const merged = mergeCloudReviewValues({ sender: '', dueDate: '19.01.2025', recipient: '' }, {
+    family: 'finance', type: 'invoice', confidence: .7, fields,
+  }, text);
+  assert.equal(merged.values.sender, 'Rosenhof GmbH');
+  assert.equal(merged.values.dueDate, '19.01.2025');
+  assert.deepEqual(merged.conflicts, ['dueDate']);
+});
+
+test('keeps literal evidence while offering normalized values and semantic taxonomy as review candidates', () => {
+  const sourceText = 'Rechnungsdatum: 30.08.2026';
+  const dateStart = sourceText.indexOf('30.08.2026');
+  const fields = normalizeCloudFields([{
+    name: 'document_date',
+    value: '30.08.2026',
+    normalizedValue: '2026-08-30',
+    confidence: 0.96,
+    validationState: 'VALIDATED',
+    provenance: 'deterministic',
+    evidence: [{ text: '30.08.2026', start: dateStart, end: dateStart + 10, pageIndex: 0 }],
+  }]);
+  const suggestions = cloudReviewSuggestions({
+    family: 'finance',
+    type: 'invoice',
+    confidence: 0.93,
+    fields,
+  }, sourceText);
+  assert.equal(fields?.documentDate.value, '30.08.2026');
+  assert.equal(fields?.documentDate.normalizedValue, '2026-08-30');
+  assert.equal(suggestions.documentDate.value, '2026-08-30');
+  assert.equal(suggestions.category.value, 'Finanzen');
+  assert.equal(suggestions.documentType.value, 'Rechnung');
 });
 
 test('twelve cloud OCR pages are planned in max-five chunks and merged in global order', () => {

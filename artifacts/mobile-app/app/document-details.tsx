@@ -15,7 +15,8 @@ import type { DocumentAnalysisField } from '@/utils/documentAnalysis';
 import { GENERAL_CATEGORIES } from '@/utils/documentCore';
 import { documentFingerprint, findDuplicates } from '@/utils/documentDomain';
 import { analyzeDocumentIntelligence, normalizeDocumentDate } from '@/utils/documentIntelligence';
-import { cloudReviewSuggestions, mergeCloudEvidence } from '@/utils/documentaCloud';
+import { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudReviewValues } from '@/utils/documentaCloud';
+import { observeScanCloudCompletion } from '@/utils/scanCloudCompletion';
 const categories = GENERAL_CATEGORIES;
 const documentTypes = [
   'Rechnung',
@@ -34,33 +35,25 @@ const documentTypes = [
   'Nachweis',
 ];
 const statusOptions: DocumentStatus[] = [...DOCUMENT_STATUSES];
-const additionalFieldLabels = ['referenceNumber', 'customerNumber', 'invoiceNumber', 'contractNumber', 'insuranceNumber', 'iban', 'bic', 'taxNumber', 'patientNumber', 'schoolReference', 'recipient', 'netAmount', 'vatAmount', 'paymentTerms'] as const;
+const additionalFieldLabels = ['referenceNumber', 'customerNumber', 'invoiceNumber', 'contractNumber', 'insuranceNumber', 'iban', 'bic', 'taxNumber', 'patientNumber', 'schoolReference', 'recipient', 'currency', 'netAmount', 'vatAmount', 'paymentTerms', 'subtype', 'purpose'] as const;
 
 export default function DocumentDetailsScreen() {
   const colors = useColors();
   const { t, language } = useTranslation();
   const insets = useSafeAreaInsets();
-  const { pendingAsset, addDocument, clearPendingAsset, profiles, activeDocuments } = useApp();
+  const { pendingAsset, addDocument, updateDocument, clearPendingAsset, profiles, activeDocuments } = useApp();
   const [title, setTitle] = useState('');
   const [sender, setSender] = useState('');
-  const [category, setCategory] = useState(
-    pendingAsset?.source === 'scanner' ? '' : 'Versicherung',
-  );
+  const [category, setCategory] = useState('');
   const [subcategory, setSubcategory] = useState('');
-  const [documentType, setDocumentType] = useState(
-    pendingAsset?.source === 'scanner' ? '' : 'Rechnung',
-  );
+  const [documentType, setDocumentType] = useState('');
   const [documentDate, setDocumentDate] = useState('');
   const [payrollPeriod, setPayrollPeriod] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [amount, setAmount] = useState('');
-  const [person, setPerson] = useState(
-    pendingAsset?.source === 'scanner' ? '' : 'Ich',
-  );
+  const [person, setPerson] = useState('');
   const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([]);
-  const [status, setStatus] = useState<DocumentStatus | ''>(
-    pendingAsset?.source === 'scanner' ? '' : 'Neu',
-  );
+  const [status, setStatus] = useState<DocumentStatus | ''>('');
   const [tags, setTags] = useState('');
   const [note, setNote] = useState('');
   const [additionalFields, setAdditionalFields] = useState<Record<string, string>>({});
@@ -89,6 +82,15 @@ export default function DocumentDetailsScreen() {
     !!status &&
     !!pendingAsset &&
     !saving;
+  const cloudTerminal = !pendingAsset?.cloudPipeline ||
+    (!['pending', 'running'].includes(pendingAsset.cloudPipeline.documentAiOcr.state) &&
+      !['pending', 'running'].includes(pendingAsset.cloudPipeline.gemini.state));
+  // Do not expose a completed analysis while opted-in cloud stages are active.
+  const reportedOcrStatus = pendingAsset?.ocrStatus === 'complete' && !cloudTerminal
+    ? 'partial'
+    : pendingAsset?.ocrStatus;
+  const cloudSuggestions = cloudReviewSuggestions(pendingAsset?.cloudIntelligence, pendingAsset?.cloudIntelligence?.sourceText ?? '');
+  const [acceptedCloudFields, setAcceptedCloudFields] = useState<string[]>([]);
 
   useEffect(() => {
     return () => {
@@ -111,40 +113,60 @@ export default function DocumentDetailsScreen() {
     const firstApplication = analysisAppliedRef.current === '';
     analysisAppliedRef.current = revision;
     const fields = pendingAsset.analysis.fields;
-    const cloudSuggestions = cloudReviewSuggestions(pendingAsset.cloudIntelligence, pendingAsset.cloudIntelligence?.sourceText ?? '');
     const stringValue = (field: DocumentAnalysisField) => {
       const value = fields[field]?.value;
       return typeof value === 'string' ? value : '';
     };
-    const localOrCloud = (field: DocumentAnalysisField | 'sender' | 'documentDate' | 'dueDate' | 'amount') =>
-      stringValue(field as DocumentAnalysisField) || cloudSuggestions[field]?.value || '';
+    const localOrCloud = (field: DocumentAnalysisField | 'sender' | 'documentDate' | 'dueDate' | 'amount' | 'title' | 'category' | 'subcategory' | 'documentType' | 'payrollPeriod') =>
+      stringValue(field as DocumentAnalysisField) || (cloudSuggestions[field]?.autoFill ? cloudSuggestions[field].value : '') || '';
     if (firstApplication) {
-      setTitle(stringValue('title'));
-      setCategory(stringValue('category'));
-      setSubcategory(stringValue('subcategory'));
-      setDocumentType(stringValue('documentType'));
-      setPayrollPeriod(stringValue('payrollPeriod'));
+      setTitle(localOrCloud('title'));
+      setCategory(localOrCloud('category'));
+      setSubcategory(localOrCloud('subcategory'));
+      setDocumentType(localOrCloud('documentType'));
+      setPayrollPeriod(localOrCloud('payrollPeriod'));
     }
+    setTitle((current) => current || localOrCloud('title'));
+    setCategory((current) => current || localOrCloud('category'));
+    setSubcategory((current) => current || localOrCloud('subcategory'));
+    setDocumentType((current) => current || localOrCloud('documentType'));
+    setPayrollPeriod((current) => current || localOrCloud('payrollPeriod'));
     setSender((current) => current || localOrCloud('sender'));
     setDocumentDate((current) => current || localOrCloud('documentDate'));
     setDueDate((current) => current || localOrCloud('dueDate'));
     setAmount((current) => current || localOrCloud('amount'));
-    setPerson((current) => current || stringValue('person') || cloudSuggestions.person?.value || cloudSuggestions.recipient?.value || '');
+    setPerson((current) => current || stringValue('person') || (cloudSuggestions.person?.autoFill ? cloudSuggestions.person.value : '') || (cloudSuggestions.recipient?.autoFill ? cloudSuggestions.recipient.value : '') || '');
     const suggestedStatus = stringValue('status');
     if (statusOptions.includes(suggestedStatus as DocumentStatus)) {
-      setStatus(suggestedStatus as DocumentStatus);
+      setStatus((current) => current || (suggestedStatus as DocumentStatus));
     }
     const suggestedTags = fields.tags?.value;
     if (Array.isArray(suggestedTags)) setTags(suggestedTags.join(', '));
     const extractedAdditionalFields: Record<string, string> = {};
     for (const field of additionalFieldLabels) {
-      const value = fields[field as DocumentAnalysisField]?.value || cloudSuggestions[field]?.value;
+      const value = fields[field as DocumentAnalysisField]?.value || (cloudSuggestions[field]?.autoFill ? cloudSuggestions[field].value : '');
       if (typeof value === 'string' && value.trim()) {
         extractedAdditionalFields[field] = value;
       }
     }
     setAdditionalFields((current) => ({ ...extractedAdditionalFields, ...current }));
   }, [pendingAsset]);
+
+  const acceptCloudSuggestion = (field: string, value: string) => {
+    if (field === 'title') setTitle(value);
+    else if (field === 'sender') setSender(value);
+    else if (field === 'category') setCategory(value);
+    else if (field === 'subcategory') setSubcategory(value);
+    else if (field === 'documentType') setDocumentType(value);
+    else if (field === 'documentDate') setDocumentDate(value);
+    else if (field === 'dueDate') setDueDate(value);
+    else if (field === 'amount') setAmount(value);
+    else if (field === 'person' || field === 'recipient') setPerson(value);
+    else if (field === 'payrollPeriod') setPayrollPeriod(value);
+    else if (field === 'status' && statusOptions.includes(value as DocumentStatus)) setStatus(value as DocumentStatus);
+    else setAdditionalFields((current) => ({ ...current, [field]: value }));
+    setAcceptedCloudFields((current) => current.includes(field) ? current : [...current, field]);
+  };
 
   const analysisHint = (field: DocumentAnalysisField) =>
     uncertainFields.has(field) ? (
@@ -286,13 +308,95 @@ export default function DocumentDetailsScreen() {
         : undefined,
       createdAt: new Date().toISOString(),
     };
+    // Register before addDocument: completion can race the save/navigation.
+    // The merger fills only empty canonical values and records disagreements
+    // for review, so a value entered or confirmed in this form is immutable.
+    let documentSaved = false;
+    let queuedCompletion: Parameters<Parameters<typeof observeScanCloudCompletion>[1]>[0] | undefined;
+    const applyCloudCompletion = (completion: Parameters<Parameters<typeof observeScanCloudCompletion>[1]>[0]) => {
+      const sourceText = completion.cloudIntelligence?.sourceText ?? '';
+      void updateDocument({
+        id,
+        update: (latest) => {
+          const merged = mergeCloudReviewValues({
+            title: latest.title,
+            sender: latest.sender,
+            category: latest.category,
+            subcategory: latest.subcategory,
+            documentType: latest.documentType,
+            documentDate: latest.documentDate,
+            dueDate: latest.dueDate,
+            amount: latest.amount,
+            person: latest.person,
+            ...latest.structuredFields,
+          }, completion.cloudIntelligence, sourceText);
+          const structuredFields = Object.fromEntries(Object.entries(merged.values).flatMap(([field, value]) =>
+            !['title', 'sender', 'category', 'subcategory', 'documentType', 'documentDate', 'dueDate', 'amount', 'person'].includes(field) &&
+            typeof value === 'string' ? [[field, value]] : [],
+          )) as Record<string, string>;
+          const nextIntelligence = latest.ocrText
+            ? mergeCloudEvidence(analyzeDocumentIntelligence({
+            text: latest.ocrText,
+            structuredFields: {
+              title: merged.values.title || latest.title,
+              sender: merged.values.sender || latest.sender,
+              category: merged.values.category || latest.category,
+              subcategory: merged.values.subcategory || latest.subcategory,
+              documentType: merged.values.documentType || latest.documentType,
+              documentDate: merged.values.documentDate || latest.documentDate,
+              dueDate: merged.values.dueDate || latest.dueDate || '',
+              amount: merged.values.amount || latest.amount || '',
+              person: merged.values.person || latest.person,
+              status: latest.status,
+              tags: latest.tags,
+              ...structuredFields,
+            },
+          }), completion.cloudIntelligence, sourceText)
+            : latest.intelligence;
+          return {
+            ...latest,
+            title: merged.values.title || latest.title,
+            sender: merged.values.sender || latest.sender,
+            category: merged.values.category || latest.category,
+            subcategory: merged.values.subcategory || latest.subcategory,
+            documentType: merged.values.documentType || latest.documentType,
+            documentDate: merged.values.documentDate || latest.documentDate,
+            dueDate: normalizeDocumentDate(merged.values.dueDate || '') ?? latest.dueDate,
+            amount: merged.values.amount || latest.amount,
+            person: merged.values.person || latest.person,
+            structuredFields,
+            intelligence: nextIntelligence,
+            cloudIntelligence: completion.cloudIntelligence,
+            cloudState: completion.cloudState,
+            cloudPipeline: completion.cloudPipeline,
+            analysisUncertainFields: [...new Set([
+              ...(latest.analysisUncertainFields ?? []),
+              ...merged.conflicts,
+            ])],
+          };
+        },
+      });
+    };
+    const stopCloudCompletion = pendingAsset.cloudPipeline?.optedIn && !cloudTerminal
+      ? observeScanCloudCompletion(id, (completion) => {
+          if (!documentSaved) {
+            queuedCompletion = completion;
+            return;
+          }
+          applyCloudCompletion(completion);
+        })
+      : () => undefined;
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     try {
       await addDocument(document);
+      documentSaved = true;
+      if (queuedCompletion) applyCloudCompletion(queuedCompletion);
       savedRef.current = true;
+      // Keep the listener after navigation; it owns a saved document only.
       clearPendingAsset();
       router.replace('/documents');
     } catch (error) {
+      stopCloudCompletion();
       setSaveError(error instanceof Error ? error.message : t('details.fileSaveError'));
       setSaving(false);
     }
@@ -353,24 +457,40 @@ export default function DocumentDetailsScreen() {
           </View>
         ) : null}
 
+        {Object.entries(cloudSuggestions).some(([field, suggestion]) => !suggestion.autoFill && !acceptedCloudFields.includes(field)) ? (
+          <View style={[styles.cloudPipelineCard, { backgroundColor: colors.card, borderColor: colors.border }]} testID="cloud-review-suggestions">
+            <Text style={[styles.analysisTitle, { color: colors.navy }]}>{t('common.review')}</Text>
+            {Object.entries(cloudSuggestions)
+              .filter(([field, suggestion]) => !suggestion.autoFill && !acceptedCloudFields.includes(field))
+              .map(([field, suggestion]) => (
+                <View key={field} style={styles.cloudSuggestionRow}>
+                  <Text style={[styles.analysisText, { color: colors.navy, flex: 1 }]}>{field}: {suggestion.value}</Text>
+                  <Pressable onPress={() => acceptCloudSuggestion(field, suggestion.value)} style={[styles.chip, { borderColor: colors.coral }]} testID={`accept-cloud-${field}`}>
+                    <Text style={[styles.chipText, { color: colors.coral }]}>{t('common.accept')}</Text>
+                  </Pressable>
+                </View>
+              ))}
+          </View>
+        ) : null}
+
         {pendingAsset?.ocrStatus ? (
           <View
             style={[
               styles.analysisCard,
               {
                 backgroundColor:
-                  pendingAsset.ocrStatus === 'complete'
+                  reportedOcrStatus === 'complete'
                     ? colors.sage
-                    : pendingAsset.ocrStatus === 'partial'
+                    : reportedOcrStatus === 'partial'
                       ? colors.sun
                     : colors.coralSoft,
               },
             ]}
             testID="ocr-analysis-status"
             accessibilityLabel={
-              pendingAsset.ocrStatus === 'partial'
+              reportedOcrStatus === 'partial'
                 ? `${t('details.analysisComplete')} · ${ocrProgressLabel}`
-                : pendingAsset.ocrStatus === 'complete'
+                : reportedOcrStatus === 'complete'
                   ? t('details.analysisComplete')
                   : pendingAsset.ocrStatus === 'empty'
                     ? t('details.noText')
@@ -379,17 +499,17 @@ export default function DocumentDetailsScreen() {
           >
             <Feather
               name={
-                pendingAsset.ocrStatus === 'complete'
+                reportedOcrStatus === 'complete'
                   ? 'cpu'
-                  : pendingAsset.ocrStatus === 'partial'
+                  : reportedOcrStatus === 'partial'
                     ? 'alert-triangle'
                     : 'alert-circle'
               }
               size={18}
               color={
-                pendingAsset.ocrStatus === 'complete'
+                reportedOcrStatus === 'complete'
                   ? colors.sageDeep
-                  : pendingAsset.ocrStatus === 'partial'
+                  : reportedOcrStatus === 'partial'
                     ? colors.accentForeground
                   : colors.coral
               }
@@ -400,22 +520,22 @@ export default function DocumentDetailsScreen() {
                   styles.analysisTitle,
                   {
                     color:
-                      pendingAsset.ocrStatus === 'complete'
+                      reportedOcrStatus === 'complete'
                         ? colors.sageDeep
-                        : pendingAsset.ocrStatus === 'partial'
+                        : reportedOcrStatus === 'partial'
                           ? colors.accentForeground
                         : colors.navy,
                   },
                 ]}
                 testID={
-                  pendingAsset.ocrStatus === 'partial'
+                  reportedOcrStatus === 'partial'
                     ? 'ocr-analysis-partial'
                     : undefined
                 }
               >
-                {pendingAsset.ocrStatus === 'complete'
+                {reportedOcrStatus === 'complete'
                   ? t('details.analysisComplete')
-                  : pendingAsset.ocrStatus === 'partial'
+                  : reportedOcrStatus === 'partial'
                     ? `${t('details.analysisComplete')} · ${ocrProgressLabel}`
                   : pendingAsset.ocrStatus === 'empty'
                     ? t('details.noText')
@@ -426,16 +546,16 @@ export default function DocumentDetailsScreen() {
                   styles.analysisText,
                   {
                     color:
-                      pendingAsset.ocrStatus === 'complete'
+                      reportedOcrStatus === 'complete'
                         ? colors.sageDeep
-                        : pendingAsset.ocrStatus === 'partial'
+                        : reportedOcrStatus === 'partial'
                           ? colors.accentForeground
                         : colors.mutedForeground,
                   },
                 ]}
               >
-                {pendingAsset.ocrStatus === 'complete' ||
-                pendingAsset.ocrStatus === 'partial'
+                {reportedOcrStatus === 'complete' ||
+                reportedOcrStatus === 'partial'
                   ? t('details.analysisCompleteText')
                   : t('details.analysisManualText')}
               </Text>
@@ -643,6 +763,7 @@ const styles = StyleSheet.create({
   assetMeta: { fontSize: 10, fontFamily: 'Inter_400Regular' },
   analysisCard: { borderRadius: 18, padding: 13, flexDirection: 'row', alignItems: 'flex-start', marginBottom: 22 },
   cloudPipelineCard: { borderWidth: 1, borderRadius: 18, padding: 13, marginTop: -14, marginBottom: 22, gap: 5 },
+  cloudSuggestionRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   analysisCopy: { flex: 1, marginLeft: 10 },
   analysisTitle: { fontSize: 12, fontFamily: 'Inter_700Bold', marginBottom: 5 },
   analysisText: { fontSize: 10, lineHeight: 15, fontFamily: 'Inter_400Regular' },

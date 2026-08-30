@@ -43,10 +43,10 @@ export default function Archive() {
   const safeBulk = archiveDocuments.filter(isBulkAcceptable).filter((document) => document.archiveReviewStatus !== 'accepted');
   const chooseYear = (value: YearFilter) => { setYear(value); setMonth(undefined); };
   const markReview = (document: DocumentRecord, reviewStatus: DocumentRecord['archiveReviewStatus'], archiveYear?: number) => {
-    updateDocument(applyArchiveReview(document, { archiveYear, reviewStatus, at: new Date().toISOString(), reason: archiveYear ? 'corrected' : 'accepted' }));
+    updateDocument({ id: document.id, update: (current) => applyArchiveReview(current, { archiveYear, reviewStatus, at: new Date().toISOString(), reason: archiveYear ? 'corrected' : 'accepted' }) });
   };
   const duplicateChoice = (document: DocumentRecord, duplicateDecision: DocumentRecord['duplicateDecision']) => {
-    updateDocument(applyArchiveReview(document, { duplicateDecision, reviewStatus: duplicateDecision === 'unknown' ? 'unknown' : 'corrected', at: new Date().toISOString() }));
+    updateDocument({ id: document.id, update: (current) => applyArchiveReview(current, { duplicateDecision, reviewStatus: duplicateDecision === 'unknown' ? 'unknown' : 'corrected', at: new Date().toISOString() }) });
   };
   const acceptAndArchive = (document: DocumentRecord) => {
     if (!document.archiveYear) return;

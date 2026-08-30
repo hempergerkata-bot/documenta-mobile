@@ -20,6 +20,7 @@ import {
   type SearchResult,
   type SuggestedQuestion,
 } from '@/utils/semanticSearch';
+import { answerDocumentQuestion, classifyQuestionIntent, isExplanationAdapterLanguage } from '@/utils/explanationExperience';
 
 const suggestedKeys: Record<SuggestedQuestion, TranslationKey> = {
   summary: 'assistant.questionSummary', deadline: 'assistant.questionDeadline', action: 'assistant.questionAction',
@@ -70,6 +71,26 @@ export default function AssistantScreen() {
       return t('assistant.foundCase', { name: top.title });
     }
     const document = top.document as DocumentRecord | undefined; if (!document) return t('assistant.missingInformation');
+    const questionIntent = classifyQuestionIntent(result.query);
+    // Search index entries are canonical persisted documents. Do not recreate
+    // intelligence here: a missing persisted result must remain unknown rather
+    // than producing an assistant-only synthetic interpretation.
+    const groundedIntelligence = document.intelligence;
+    if (groundedIntelligence && questionIntent !== 'general' && isExplanationAdapterLanguage(settings.explanationLanguage)) {
+      const corrected = {
+        sender: document.sender,
+        recipient: document.structuredFields?.recipient,
+        documentDate: document.documentDate,
+        amount: document.amount,
+        deadline: document.dueDate,
+        paymentTerms: document.structuredFields?.paymentTerms,
+        referenceNumber: document.structuredFields?.referenceNumber
+          ?? document.structuredFields?.invoiceNumber
+          ?? document.structuredFields?.customerNumber,
+      };
+      const grounded = answerDocumentQuestion(groundedIntelligence, result.query, settings.explanationLanguage, corrected);
+      if (grounded.supported) return [t('assistant.foundDocument', { name: document.title }), grounded.text, grounded.safetyNotice].filter(Boolean).join('\n');
+    }
     const asksDeadline = result.intent === 'find_document_by_deadline' || /(meddig|határidő|deadline|frist)/i.test(result.query);
     const asksAmount = result.intent === 'find_document_by_amount' || /(mennyi|összeg|eur|euro|betrag|amount)/i.test(result.query);
     const asksAction = result.intent === 'next_action' || result.intent === 'find_document_by_action' || /(mit kell|válaszol|teendő|next step|action)/i.test(result.query);

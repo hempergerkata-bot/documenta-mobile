@@ -35,3 +35,17 @@ test("extracts physical Rosenhof layout parties and separates IBAN from BIC", ()
   assert.equal(values.documentDate, "14.07.2026");
   assert.equal(values.amount, "32,80 EUR");
 });
+
+test("retains literal invoice evidence while offering normalized review candidates", () => {
+  const source = "Invoice\nSender:  Example   Institution AG\nDate: 14.07.2026\nTotal: 1.234,50 EUR";
+  const fields = extractInvoiceEssentials(source);
+  const date = fields.find((field) => field.name === "documentDate");
+  const sender = fields.find((field) => field.name === "sender");
+  const amount = fields.find((field) => field.name === "amount");
+  assert.equal(date?.value, "14.07.2026");
+  assert.equal(date?.normalizedValue, "2026-07-14");
+  assert.equal(sender?.value, "Example   Institution AG");
+  assert.equal(sender?.normalizedValue, "Example Institution AG");
+  assert.equal(amount?.value, "1.234,50 EUR");
+  for (const field of [date, sender, amount]) assert.equal(source.slice(field!.evidence[0].start, field!.evidence[0].end), field!.value);
+});

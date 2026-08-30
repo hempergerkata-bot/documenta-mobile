@@ -22,6 +22,7 @@ import { recognizeAndAnalyzeDocument } from '@/utils/documentOcr';
 import { MAX_SCAN_PAGES } from '@/utils/scanLimits';
 import type { DocumentVariant } from '@/utils/documentReconstruction';
 import { checkCloudProviderStatus, loadCloudConsent, persistCloudConsent, processScanCloudPipeline, type CloudProviderStatus, type CloudState } from '@/utils/documentaCloud';
+import { publishScanCloudCompletion } from '@/utils/scanCloudCompletion';
 
 export default function ScanReviewScreen() {
   const colors = useColors();
@@ -183,8 +184,30 @@ export default function ScanReviewScreen() {
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         router.replace('/document-details');
         if (cloudOptIn) void cloudForLocalOcr(analysis.text, analysis.ocrStatus, `Documenta Scan ${pages.length}`, result.originalPageUris)
-          .then((cloud) => setPendingAsset((current) => current?.documentId === documentId ? { ...current, ...cloud } : current))
-          .catch(() => setPendingAsset((current) => current?.documentId === documentId ? { ...current, cloudState: 'unavailable' } : current));
+          .then((cloud) => {
+            // The details screen may already have saved and cleared pendingAsset.
+            // Publish by stable id as well as updating the still-open review form.
+            publishScanCloudCompletion(documentId, cloud);
+            setPendingAsset((current) => current?.documentId === documentId ? { ...current, ...cloud } : current);
+          })
+          .catch(() => {
+            const completion = {
+              cloudState: 'unavailable' as const,
+              cloudPipeline: {
+                optedIn: true,
+                localOcr: { state: analysis.text.trim() ? 'succeeded' as const : 'failed' as const, textAvailable: !!analysis.text.trim() },
+                documentAiOcr: { state: 'failed' as const },
+                gemini: { state: 'failed' as const },
+                fallbackUsed: false,
+                failures: [{ stage: 'gemini' as const, reason: 'service_unavailable' as const, message: 'Cloud processing failed unexpectedly.' }],
+                failureReason: 'service_unavailable' as const,
+                finalProvider: analysis.text.trim() ? 'local_only' as const : 'local_unavailable' as const,
+                cloudState: 'unavailable' as const,
+              },
+            };
+            publishScanCloudCompletion(documentId, completion);
+            setPendingAsset((current) => current?.documentId === documentId ? { ...current, ...completion } : current);
+          });
         return;
       }
 
@@ -196,6 +219,7 @@ export default function ScanReviewScreen() {
           name: pendingAsset?.name ?? `${t('add.image')}.jpg`,
           mimeType: pendingAsset?.mimeType,
           source: 'gallery' as const,
+          documentId,
           pageUris: pages,
           analysis,
           ocrStatus: analysis.ocrStatus,
@@ -216,7 +240,28 @@ export default function ScanReviewScreen() {
         };
         setPendingAsset(localAsset);
         if (cloudOptIn) void cloudForLocalOcr(analysis.text, analysis.ocrStatus, localAsset.name, pages)
-          .then((cloud) => setPendingAsset((current) => current?.uri === localAsset.uri ? { ...current, ...cloud } : current));
+          .then((cloud) => {
+            publishScanCloudCompletion(documentId, cloud);
+            setPendingAsset((current) => current?.documentId === documentId ? { ...current, ...cloud } : current);
+          })
+          .catch(() => {
+            const completion = {
+              cloudState: 'unavailable' as const,
+              cloudPipeline: {
+                optedIn: true,
+                localOcr: { state: analysis.text.trim() ? 'succeeded' as const : 'failed' as const, textAvailable: !!analysis.text.trim() },
+                documentAiOcr: { state: 'failed' as const },
+                gemini: { state: 'failed' as const },
+                fallbackUsed: false,
+                failures: [{ stage: 'gemini' as const, reason: 'service_unavailable' as const, message: 'Cloud processing failed unexpectedly.' }],
+                failureReason: 'service_unavailable' as const,
+                finalProvider: analysis.text.trim() ? 'local_only' as const : 'local_unavailable' as const,
+                cloudState: 'unavailable' as const,
+              },
+            };
+            publishScanCloudCompletion(documentId, completion);
+            setPendingAsset((current) => current?.documentId === documentId ? { ...current, ...completion } : current);
+          });
       } catch {
         // A recognition failure must not prevent the user from filing a scan.
         // The persisted page assets remain available for manual review.
