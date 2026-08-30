@@ -20,6 +20,8 @@ pnpm --filter @workspace/api-server run mint:documenta-url -- 3600
 
 The command prints one signed install URL and its expiration time. Treat the URL as a bearer credential and share it only with the intended internal recipient. The install page preserves the same token in its APK link.
 
+The app's default download button uses `/api/install/documenta/latest`. This stable entry point only mints a short-lived, build-scoped HMAC token and redirects to the signed install page; it never serves the APK without the signed token.
+
 ## Verification
 
 For each release:

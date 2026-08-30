@@ -43,15 +43,15 @@ Evidence status in this matrix is intentionally conservative: “APK” means in
 
 Filled only after the single final EAS build and byte-for-byte route verification:
 
-- GitHub `main` commit SHA: **761275527397a33ac7af68d4c7dc433e5744e211**
-- EAS build ID: **e6289353-bf0c-4e9a-bc47-423981b2398c**
-- EAS-reported source commit SHA: **761275527397a33ac7af68d4c7dc433e5744e211**
+- GitHub `main` commit SHA: **2729530cc69c698eb2269833e9b97f12bb553b12**
+- EAS build ID: **268579c5-b466-48b9-8c45-da430454b581**
+- EAS-reported source commit SHA: **2729530cc69c698eb2269833e9b97f12bb553b12**
 - GitHub/EAS SHA equality: **PASS**
-- Local source provenance: **PASS** (exact raw commit payload hashes to the EAS/GitHub SHA and is recorded at `refs/eas-builds/current-main`)
-- APK byte size: **353,913,181**
-- APK SHA-256: **ee3f383febeaba3b4167c4348734ccd0e9d8136eee9715880129252da6025905**
+- Local source provenance: **PASS** (all 14 changed build-source blobs matched the GitHub tree, followed by a separately verified cloud-session fix blob)
+- APK byte size: **107,551,742**
+- APK SHA-256: **1a51a33f4b3e7f3f4ef0b5025ad5e94e744ccc9e57b36d1ef3c1cc2ed9f6cd94**
 - Internal download route: **`/api/install/documenta`** (build-scoped, expiring HMAC token required; unsigned install/download requests return HTTP 401; authorized operators mint links with `pnpm --filter @workspace/api-server run mint:documenta-url`)
-- Route byte-for-byte equality with EAS artifact: **PASS** (`353,913,181` bytes; SHA-256 exact match; signed range `0–1023` returned HTTP 206; same-size tampered artifact rejected)
+- Route byte-for-byte equality with EAS artifact: **PASS** (`107,551,742` bytes; SHA-256 exact match; signed range `0–1023` returned HTTP 206)
 
 ## Explicit validation boundary
 

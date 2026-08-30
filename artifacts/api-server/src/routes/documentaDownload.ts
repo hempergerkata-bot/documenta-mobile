@@ -7,11 +7,12 @@ import { Router, type IRouter, type RequestHandler } from "express";
 const router: IRouter = Router();
 
 const apkFileName = "documenta-samsung-arm64-1.0.0.apk";
-const apkSize = 107531330;
-const apkSha256 = "6d9d2036618d3080d8f6129f7a9f6583f080b1f2e2136cdfca1b64fa91302f50";
-const buildId = "5cc0dfd9-fc4e-47d4-ae40-3c6df596afe0";
-const sourceSha = "edca026f884da4cf2c451b1621324e8337dfa8a3";
+const apkSize = 107551742;
+const apkSha256 = "1a51a33f4b3e7f3f4ef0b5025ad5e94e744ccc9e57b36d1ef3c1cc2ed9f6cd94";
+const buildId = "268579c5-b466-48b9-8c45-da430454b581";
+const sourceSha = "2729530cc69c698eb2269833e9b97f12bb553b12";
 const maxTokenLifetimeMs = 14 * 24 * 60 * 60 * 1000;
+const defaultTokenLifetimeMs = 7 * 24 * 60 * 60 * 1000;
 const apkPath = path.resolve(
   process.cwd(),
   "../../downloads/Documenta-Samsung-ARM64.apk",
@@ -46,6 +47,12 @@ function validToken(token: string) {
   return expected.length === provided.length && timingSafeEqual(expected, provided);
 }
 
+function issueToken() {
+  const expiresAt = String(Date.now() + defaultTokenLifetimeMs);
+  const signature = expectedSignature(expiresAt);
+  return `${expiresAt}.${signature}`;
+}
+
 const requireSignedAccess: RequestHandler = (request, response, next) => {
   const token = typeof request.query["token"] === "string" ? request.query["token"] : "";
   if (!validToken(token)) {
@@ -67,6 +74,13 @@ const requireSignedAccess: RequestHandler = (request, response, next) => {
 };
 
 let verifiedFileKey = "";
+
+// Stable entry point for the app's default download button. It never serves
+// the artifact directly; it mints the same short-lived, build-scoped token
+// used by the operator install flow and redirects to the signed page.
+router.get("/install/documenta/latest", (_request, response) => {
+  response.redirect(303, `/api/install/documenta?token=${encodeURIComponent(issueToken())}`);
+});
 
 async function verifyApkArtifact() {
   const fileStat = await stat(apkPath);

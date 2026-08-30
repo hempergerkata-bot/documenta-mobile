@@ -3,14 +3,17 @@ import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 
-const APK_URL = 'https://expo.dev/artifacts/eas/GYjgBuoORcJLTpzypPUNbZwSrx3nTrM7Sku9UEBd1TY.apk';
+const installOrigin = process.env.EXPO_PUBLIC_API_ORIGIN || process.env.EXPO_PUBLIC_DOMAIN;
+const APK_URL = installOrigin
+  ? `https://${installOrigin.replace(/^https?:\/\//i, '').replace(/\/+$/, '')}/api/install/documenta/latest`
+  : '';
 
 export default function InstallScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
 
   const openDownload = () => {
-    void Linking.openURL(APK_URL);
+    if (APK_URL) void Linking.openURL(APK_URL);
   };
 
   return (
@@ -53,12 +56,12 @@ export default function InstallScreen() {
           <Text style={[styles.downloadText, { color: c.white }]}>Samsung APK letöltése</Text>
         </Pressable>
         <Text style={[styles.hint, { color: c.mutedForeground }]}>
-          A gomb közvetlenül a telepíthető APK-fájlt tölti le. Ha a Chrome csak megnyitja,
-          tartsd hosszan nyomva a gombot, majd válaszd a „Link letöltése” lehetőséget.
+           A gomb a Documenta ellenőrzött, időkorlátos telepítési oldalára visz. Innen töltsd le
+           az APK-t, majd nyisd meg a Letöltések mappából.
         </Text>
 
         <View style={[styles.details, { borderTopColor: c.border }]}>
-          <Detail label="Build" value="a1558c57" color={c} />
+           <Detail label="Build" value="268579c5" color={c} />
           <Detail label="Méret" value="107,5 MB" color={c} />
           <Detail label="Csomag" value="com.documenta.app" color={c} />
           <Detail label="Verzió" value="1.0.0 (1)" color={c} />
@@ -81,7 +84,7 @@ export default function InstallScreen() {
       </View>
 
       <Text style={[styles.footer, { color: c.mutedForeground }]}>
-        Samsung ARM64 internal build · EAS build a1558c57
+         Samsung ARM64 internal build · EAS build 268579c5
       </Text>
     </ScrollView>
   );
