@@ -6,15 +6,15 @@ import { Router, type IRouter, type RequestHandler } from "express";
 
 const router: IRouter = Router();
 
-const apkFileName = "documenta-preview-current-main-1.0.0.apk";
-const apkSize = 353913181;
-const apkSha256 = "ee3f383febeaba3b4167c4348734ccd0e9d8136eee9715880129252da6025905";
-const buildId = "e6289353-bf0c-4e9a-bc47-423981b2398c";
-const sourceSha = "761275527397a33ac7af68d4c7dc433e5744e211";
+const apkFileName = "documenta-samsung-arm64-1.0.0.apk";
+const apkSize = 107486490;
+const apkSha256 = "9cf0bd10a4520bf6895fe1706eab71905bc23b2d7aac0a1da749e40e4f42901c";
+const buildId = "a1558c57-6a27-460d-ba3d-2f69c124e1cf";
+const sourceSha = "0c2c07839b4d1a20a15853eb613c6b20fda1d6ce";
 const maxTokenLifetimeMs = 14 * 24 * 60 * 60 * 1000;
 const apkPath = path.resolve(
   process.cwd(),
-  "../../.agents/outputs/documenta-preview-current-main-1.0.0.apk",
+  "../../downloads/Documenta-Samsung-ARM64.apk",
 );
 
 function signingSecret() {

@@ -15,7 +15,7 @@ import type { DocumentAnalysisField } from '@/utils/documentAnalysis';
 import { GENERAL_CATEGORIES } from '@/utils/documentCore';
 import { documentFingerprint, findDuplicates } from '@/utils/documentDomain';
 import { analyzeDocumentIntelligence, normalizeDocumentDate } from '@/utils/documentIntelligence';
-import { mergeCloudEvidence } from '@/utils/documentaCloud';
+import { cloudReviewSuggestions, mergeCloudEvidence } from '@/utils/documentaCloud';
 const categories = GENERAL_CATEGORIES;
 const documentTypes = [
   'Rechnung',
@@ -34,7 +34,7 @@ const documentTypes = [
   'Nachweis',
 ];
 const statusOptions: DocumentStatus[] = [...DOCUMENT_STATUSES];
-const additionalFieldLabels = ['referenceNumber', 'customerNumber', 'invoiceNumber', 'contractNumber', 'insuranceNumber', 'iban', 'taxNumber', 'patientNumber', 'schoolReference'] as const;
+const additionalFieldLabels = ['referenceNumber', 'customerNumber', 'invoiceNumber', 'contractNumber', 'insuranceNumber', 'iban', 'taxNumber', 'patientNumber', 'schoolReference', 'recipient', 'netAmount', 'vatAmount', 'paymentTerms'] as const;
 
 export default function DocumentDetailsScreen() {
   const colors = useColors();
@@ -108,19 +108,22 @@ export default function DocumentDetailsScreen() {
     if (analysisAppliedRef.current || !pendingAsset?.analysis) return;
     analysisAppliedRef.current = true;
     const fields = pendingAsset.analysis.fields;
+    const cloudSuggestions = cloudReviewSuggestions(pendingAsset.cloudIntelligence, pendingAsset.cloudIntelligence?.sourceText ?? '');
     const stringValue = (field: DocumentAnalysisField) => {
       const value = fields[field]?.value;
       return typeof value === 'string' ? value : '';
     };
+    const localOrCloud = (field: DocumentAnalysisField | 'sender' | 'documentDate' | 'dueDate' | 'amount') =>
+      stringValue(field as DocumentAnalysisField) || cloudSuggestions[field]?.value || '';
     setTitle(stringValue('title'));
-    setSender(stringValue('sender'));
+    setSender(localOrCloud('sender'));
     setCategory(stringValue('category'));
     setSubcategory(stringValue('subcategory'));
     setDocumentType(stringValue('documentType'));
-    setDocumentDate(stringValue('documentDate'));
+    setDocumentDate(localOrCloud('documentDate'));
     setPayrollPeriod(stringValue('payrollPeriod'));
-    setDueDate(stringValue('dueDate'));
-    setAmount(stringValue('amount'));
+    setDueDate(localOrCloud('dueDate'));
+    setAmount(localOrCloud('amount'));
     setPerson(stringValue('person'));
     const suggestedStatus = stringValue('status');
     if (statusOptions.includes(suggestedStatus as DocumentStatus)) {
@@ -130,7 +133,7 @@ export default function DocumentDetailsScreen() {
     if (Array.isArray(suggestedTags)) setTags(suggestedTags.join(', '));
     const extractedAdditionalFields: Record<string, string> = {};
     for (const field of additionalFieldLabels) {
-      const value = fields[field as DocumentAnalysisField]?.value;
+      const value = fields[field as DocumentAnalysisField]?.value || cloudSuggestions[field]?.value;
       if (typeof value === 'string' && value.trim()) {
         extractedAdditionalFields[field] = value;
       }
@@ -247,6 +250,7 @@ export default function DocumentDetailsScreen() {
       ),
       cloudIntelligence: pendingAsset.cloudIntelligence,
       cloudState: pendingAsset.cloudState,
+      cloudPipeline: pendingAsset.cloudPipeline,
       intelligence: pendingAsset.analysis
         ? mergeCloudEvidence(analyzeDocumentIntelligence({
             text: pendingAsset.analysis.text,
@@ -319,6 +323,28 @@ export default function DocumentDetailsScreen() {
           </View>
           <Feather name="check-circle" size={20} color={colors.sageDeep} />
         </View>
+
+        {pendingAsset?.cloudPipeline ? (
+          <View style={[styles.cloudPipelineCard, { backgroundColor: colors.card, borderColor: colors.border }]} testID="cloud-pipeline-status">
+            <Text style={[styles.analysisTitle, { color: colors.navy }]}>
+              Cloud pipeline · {pendingAsset.cloudPipeline.finalProvider.replaceAll('_', ' ')}
+            </Text>
+            <Text style={[styles.analysisText, { color: colors.mutedForeground }]}>
+              Local OCR: {pendingAsset.cloudPipeline.localOcr.state}
+              {' · '}Document AI OCR: {pendingAsset.cloudPipeline.documentAiOcr.state}
+              {' · '}Gemini: {pendingAsset.cloudPipeline.gemini.state}
+              {pendingAsset.cloudPipeline.gemini.input
+                ? ` (${pendingAsset.cloudPipeline.gemini.input.replaceAll('_', ' ')})`
+                : ''}
+              {pendingAsset.cloudPipeline.fallbackUsed ? ' · fallback used' : ''}
+            </Text>
+            {pendingAsset.cloudPipeline.failures.map((failure, index) => (
+              <Text key={`${failure.stage}-${index}`} style={[styles.analysisText, { color: colors.coral }]} testID={`cloud-pipeline-failure-${index}`}>
+                {failure.stage.replaceAll('_', ' ')} · {failure.reason.replaceAll('_', ' ')}: {failure.message}
+              </Text>
+            ))}
+          </View>
+        ) : null}
 
         {pendingAsset?.ocrStatus ? (
           <View
@@ -609,6 +635,7 @@ const styles = StyleSheet.create({
   assetName: { fontSize: 12, fontFamily: 'Inter_700Bold', marginBottom: 4 },
   assetMeta: { fontSize: 10, fontFamily: 'Inter_400Regular' },
   analysisCard: { borderRadius: 18, padding: 13, flexDirection: 'row', alignItems: 'flex-start', marginBottom: 22 },
+  cloudPipelineCard: { borderWidth: 1, borderRadius: 18, padding: 13, marginTop: -14, marginBottom: 22, gap: 5 },
   analysisCopy: { flex: 1, marginLeft: 10 },
   analysisTitle: { fontSize: 12, fontFamily: 'Inter_700Bold', marginBottom: 5 },
   analysisText: { fontSize: 10, lineHeight: 15, fontFamily: 'Inter_400Regular' },

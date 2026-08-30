@@ -2,9 +2,9 @@ import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
 import { Buffer } from 'buffer';
 import { File } from 'expo-file-system';
-export type { CloudEvidence, CloudFact, CloudIntelligence, CloudOcrPage, CloudOcrResult } from './documentaCloudMapping';
-import { mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, type CloudIntelligence, type CloudOcrResult } from './documentaCloudMapping';
-export { mergeCloudEvidence, mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks } from './documentaCloudMapping';
+export type { CloudEvidence, CloudFact, CloudIntelligence, CloudOcrPage, CloudOcrResult, CloudPipelineFailure, CloudPipelineFailureReason, CloudPipelineStageState, ScanCloudPipelineResult, ScanCloudPipelineState } from './documentaCloudMapping';
+import { mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline as runPipeline, type CloudIntelligence, type CloudOcrResult } from './documentaCloudMapping';
+export { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline } from './documentaCloudMapping';
 
 const INSTALLATION_KEY = '@documenta/cloud-installation-id';
 const SESSION_KEY = '@documenta/cloud-session';
@@ -94,6 +94,19 @@ export async function processCloudIntelligence(ocrText: string, title: string): 
 
 export function cloudFailureState(error: unknown): CloudState {
   return error instanceof DocumentaCloudError ? error.state : 'unavailable';
+}
+
+export async function processScanCloudPipeline(input: {
+  optedIn: boolean;
+  localText: string;
+  localOcrStatus: 'complete' | 'partial' | 'empty' | 'failed';
+  title: string;
+  pageUris: string[];
+}) {
+  return runPipeline(input, {
+    uploadDocumentAiOcr: uploadCloudOcrPages,
+    processGemini: processCloudIntelligence,
+  });
 }
 
 /** Explicitly uploads selected page bytes only; callers must gate this behind opt-in. */

@@ -22,7 +22,7 @@ const INSTALL_TEMPLATE_PATH = path.resolve(
 );
 const basePath = (process.env.BASE_PATH || '/').replace(/\/+$/, '');
 const CURRENT_APK_URL =
-  'https://expo.dev/artifacts/eas/DJdvCu8UyMaR_aEypaS28Ni1NRSFkezHxVxqqGLnlI0.apk';
+  'https://expo.dev/artifacts/eas/GYjgBuoORcJLTpzypPUNbZwSrx3nTrM7Sku9UEBd1TY.apk';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',

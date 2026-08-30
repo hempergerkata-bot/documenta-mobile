@@ -2,3 +2,5 @@
 artifacts/mobile-app/releases/documenta-preview-1.0.0-build-1.apk filter=lfs diff=lfs merge=lfs -text
 .agents/outputs/documenta-preview-standalone-1.0.0.apk filter=lfs diff=lfs merge=lfs -text
 .agents/outputs/documenta-preview-current-main-1.0.0.apk filter=lfs diff=lfs merge=lfs -text
+downloads/Documenta-Task26-current-main-Samsung.apk filter=lfs diff=lfs merge=lfs -text
+downloads/Documenta-Samsung-ARM64.apk filter=lfs diff=lfs merge=lfs -text

@@ -204,7 +204,12 @@ function valueFrom(input: IntelligenceInput, key: string, label?: RegExp): Fact<
   return match?.[1] ? fact(clean(match[1]), [ev(match[0], 'ocr', 'medium')], 'medium') : unknown<string>();
 }
 function extractTaxonomy(text: string, adapter?: Adapter): DocumentIntelligenceResult['taxonomy'] {
-  const hit = adapter?.category.find(([pattern]) => pattern.test(text));
+  const explicitInvoice = adapter === de &&
+    [/\brechnung\b/i, /\brechnungs(?:nummer|nr\.?|datum|betrag)\b/i, /\b(?:gesamtbetrag|rechnungsbetrag|zahlbetrag)\b/i, /\b(?:mwst\.?|mehrwertsteuer|umsatzsteuer)\b/i, /\bzahlbar\s+(?:sofort|innerhalb|bis)\b/i]
+      .filter(pattern => pattern.test(text)).length >= 2;
+  const hit = explicitInvoice
+    ? de.category.find(([, , subtype]) => subtype === 'invoice')
+    : adapter?.category.find(([pattern]) => pattern.test(text));
   const evidence = hit ? [ev(hit[0].source, 'ocr', 'medium')] : [];
   // Never force an unfamiliar document into a known family: this is an explicit
   // open-world result rather than a guessed classification.

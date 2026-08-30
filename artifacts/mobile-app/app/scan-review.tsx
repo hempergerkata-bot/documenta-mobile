@@ -21,7 +21,7 @@ import { createPersistentScannedDocument, deleteTemporaryScanPages } from '@/uti
 import { recognizeAndAnalyzeDocument } from '@/utils/documentOcr';
 import { MAX_SCAN_PAGES } from '@/utils/scanLimits';
 import type { DocumentVariant } from '@/utils/documentReconstruction';
-import { cloudFailureState, processCloudIntelligence, uploadCloudOcrPages, type CloudState } from '@/utils/documentaCloud';
+import { processScanCloudPipeline, type CloudState } from '@/utils/documentaCloud';
 
 export default function ScanReviewScreen() {
   const colors = useColors();
@@ -41,33 +41,26 @@ export default function ScanReviewScreen() {
   const isGalleryImport = source === 'gallery';
   const savedDiagnostics = pendingAsset?.reconstructionDiagnostics ?? [];
 
-  const cloudForLocalOcr = async (text: string, name: string, pageUris: string[]) => {
-    if (!cloudOptIn) return { cloudState: 'offline' as const };
-    if (!text.trim()) {
-      setCloudState('unavailable');
-      return { cloudState: 'unavailable' as const };
-    }
-    setCloudState('cloud');
-    let cloudOcr: Awaited<ReturnType<typeof uploadCloudOcrPages>>;
-    let ocrFailure: unknown;
-    try {
-      // Page bytes leave the device only here, after the user has explicitly opted in.
-      // The local ML Kit text remains the fallback and source of record.
-      cloudOcr = await uploadCloudOcrPages(pageUris);
-    } catch (caught) {
-      ocrFailure = caught;
-    }
-    try {
-      const sourceText = cloudOcr?.text || text;
-      const processed = await processCloudIntelligence(sourceText, name);
-      const cloudIntelligence = { ...processed, sourceText, ...(cloudOcr ? { ocrPages: cloudOcr.pages } : {}) };
-      return { cloudState: 'cloud' as const, cloudIntelligence };
-    } catch (caught) {
-      const state = cloudFailureState(caught ?? ocrFailure);
-      setCloudState(state);
-      // Local OCR is deliberately retained on every remote failure.
-      return { cloudState: state };
-    }
+  const cloudForLocalOcr = async (
+    text: string,
+    localOcrStatus: 'complete' | 'partial' | 'empty' | 'failed',
+    name: string,
+    pageUris: string[],
+  ) => {
+    // The state machine itself enforces opt-in before invoking remote providers.
+    const result = await processScanCloudPipeline({
+      optedIn: cloudOptIn,
+      localText: text,
+      localOcrStatus,
+      title: name,
+      pageUris,
+    });
+    setCloudState(result.pipeline.cloudState);
+    return {
+      cloudState: result.pipeline.cloudState,
+      cloudPipeline: result.pipeline,
+      ...(result.cloudIntelligence ? { cloudIntelligence: result.cloudIntelligence } : {}),
+    };
   };
 
   const scanMore = async (replaceIndex?: number) => {
@@ -135,7 +128,7 @@ export default function ScanReviewScreen() {
           result.originalPageUris,
         );
         setBusyLabel(`${t('scan.recognizing')} · ${t('security.cloud')}`);
-        const cloud = await cloudForLocalOcr(analysis.text, `Documenta Scan ${pages.length}`, result.originalPageUris);
+        const cloud = await cloudForLocalOcr(analysis.text, analysis.ocrStatus, `Documenta Scan ${pages.length}`, result.originalPageUris);
         setPendingAsset({
           uri: result.pdfUri,
           pdfUri: result.pdfUri,
@@ -162,7 +155,7 @@ export default function ScanReviewScreen() {
       setBusyLabel(t('scan.recognizing'));
       try {
         const analysis = await recognizeAndAnalyzeDocument(pages);
-        const cloud = await cloudForLocalOcr(analysis.text, pendingAsset?.name ?? t('add.image'), pages);
+        const cloud = await cloudForLocalOcr(analysis.text, analysis.ocrStatus, pendingAsset?.name ?? t('add.image'), pages);
         setPendingAsset({
           uri: pendingAsset?.uri ?? pages[0],
           name: pendingAsset?.name ?? `${t('add.image')}.jpg`,
@@ -177,6 +170,7 @@ export default function ScanReviewScreen() {
       } catch {
         // A recognition failure must not prevent the user from filing a scan.
         // The persisted page assets remain available for manual review.
+        const cloud = await cloudForLocalOcr('', 'failed', pendingAsset?.name ?? t('add.image'), pages);
         setPendingAsset({
           uri: pendingAsset?.uri ?? pages[0],
           name: pendingAsset?.name ?? `${t('add.image')}.jpg`,
@@ -189,7 +183,7 @@ export default function ScanReviewScreen() {
             status: 'failed',
             text: '',
           })),
-            cloudState: cloudOptIn ? 'unavailable' : 'offline',
+          ...cloud,
         });
       }
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);

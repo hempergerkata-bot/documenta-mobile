@@ -213,7 +213,9 @@ function suggestion(
 function findLabelValue(lines: string[], labels: string[]) {
   for (const [lineIndex, line] of lines.entries()) {
     for (const label of labels) {
-      const match = line.match(new RegExp(`\\b${label}\\b\\s*[:\\-]?\\s*(.+)$`, 'i'));
+      const match = line.match(
+        new RegExp(`(?:^|\\b)${label}(?=\\s|:|-|$)\\s*[:\\-]?\\s*(.+)$`, 'i'),
+      );
       if (match?.[1]?.trim()) {
         return { value: match[1].trim(), evidence: line };
       }
@@ -267,7 +269,7 @@ function findProfileFields(lines: string[], rule?: DocumentRule) {
 
 function extractLegalEntity(line: string) {
   const match = line.match(
-    /([\p{L}\d][\p{L}\d&.,'()\/\s-]{1,90}?\b(?:GmbH(?:\s*&\s*Co\.?\s*KG)?|UG(?:\s*\(haftungsbeschränkt\))?|AG|KG|OHG|e\.?\s*V\.?|Krankenkasse|Versicherung|Finanzamt|Stadtwerke))\b/iu,
+    /([\p{L}\d][\p{L}\d&.,'()\/\s-]{1,90}?\b(?:GmbH(?:\s*&\s*Co\.?\s*KG)?|UG(?:\s*\(haftungsbeschränkt\))?|AG|KG|OHG|e\.?\s*K\.?|e\.?\s*V\.?|Krankenkasse|Versicherung|Finanzamt|Stadtwerke))(?!\p{L})/iu,
   );
   return match?.[1] ? cleanEntityValue(match[1]) : undefined;
 }
@@ -305,7 +307,21 @@ function findPayrollDate(text: string) {
 
 function detectRule(text: string) {
   let best: { rule: DocumentRule; score: number; evidence: string } | undefined;
+  const explicitInvoiceEvidence = [
+    /\brechnung\b/i,
+    /\brechnungs(?:nummer|nr\.?|datum|betrag)\b/i,
+    /\b(?:gesamtbetrag|rechnungsbetrag|zahlbetrag)\b/i,
+    /\b(?:mwst\.?|mehrwertsteuer|umsatzsteuer)\b/i,
+    /\bzahlbar\s+(?:sofort|innerhalb|bis)\b/i,
+  ].filter((pattern) => pattern.test(text));
+  const explicitInvoice = explicitInvoiceEvidence.length >= 2;
   for (const rule of rules) {
+    if (
+      rule.documentType === 'Lohnabrechnung / Gehaltsabrechnung' &&
+      (!rule.patterns[0].test(text) || explicitInvoice)
+    ) {
+      continue;
+    }
     const matches = rule.patterns.filter((pattern) => pattern.test(text));
     const score = matches.length;
     if (score > 0 && (!best || score > best.score)) {
@@ -343,7 +359,7 @@ function findSender(lines: string[]) {
   const legalEntityLine = lines
     .slice(0, 15)
     .find((line) =>
-      /\b(?:GmbH(?:\s*&\s*Co\.?\s*KG)?|AG|e\.?\s*V\.?|Krankenkasse|Versicherung|Finanzamt|Stadtwerke)\b/i.test(
+      /\b(?:GmbH(?:\s*&\s*Co\.?\s*KG)?|AG|e\.?\s*K\.?|e\.?\s*V\.?|Krankenkasse|Versicherung|Finanzamt|Stadtwerke)(?!\p{L})/iu.test(
         line,
       ),
     );

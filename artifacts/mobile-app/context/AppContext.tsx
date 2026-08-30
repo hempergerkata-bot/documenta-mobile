@@ -55,7 +55,7 @@ import type {
   OcrDocumentStatus,
   OcrPageResult,
 } from '@/utils/documentOcr';
-import type { CloudIntelligence, CloudState } from '@/utils/documentaCloud';
+import type { CloudIntelligence, CloudState, ScanCloudPipelineState } from '@/utils/documentaCloud';
 import { DOCUMENT_STATUSES, hasFeature as checkFeature, migrateProfileIds, type DocumentStatus as CoreDocumentStatus, type Entitlements, type Feature } from '@/utils/documentCore';
 import {
   cleanupDeletedDocument, documentFingerprint, selectActiveDocuments, type ActivityRecord, type BusinessWorkspace, type CaseRecord, type ContractMonitor,
@@ -128,6 +128,7 @@ import { GoogleDriveBackupAdapter, publishGoogleDriveSnapshot } from '@/utils/go
 import { chooseLocalBackup, createLocalBackupBundle, parseLocalBackupBundle, relinkLocalBundleState, shareLocalBackup, stageBackupAssetBytes, stageBackupAssets } from '@/utils/backupNative';
 import type { CloudAccount } from '@/utils/backupDomain';
 import { canonicalizeManifest } from '@/utils/backupDomain';
+import { disableUnenforcedSecurity, requireCloudAccountRevalidation } from '@/utils/truthfulness';
 
 export type DocumentStatus = CoreDocumentStatus;
 export { DOCUMENT_STATUSES };
@@ -189,6 +190,7 @@ export type DocumentRecord = {
   /** Optional cloud metadata; local OCR/intelligence remains the source of record. */
   cloudIntelligence?: CloudIntelligence;
   cloudState?: CloudState;
+  cloudPipeline?: ScanCloudPipelineState;
   createdAt: string;
   lifecycle?: 'aktiv' | 'archiviert' | 'papierkorb';
   fingerprint?: string;
@@ -229,6 +231,7 @@ export type PendingAsset = {
   ocrPageResults?: OcrPageResult[];
   cloudIntelligence?: CloudIntelligence;
   cloudState?: CloudState;
+  cloudPipeline?: ScanCloudPipelineState;
 };
 
 export type BackupAppState = {
@@ -387,7 +390,7 @@ export function migrateSettings(raw: Partial<Settings> | undefined, deviceLangua
     explanationVoiceIdentifiers: Object.fromEntries(Object.entries(raw?.explanationVoiceIdentifiers ?? {}).filter(([language, identifier]) => isExplanationLanguage(language as AppLanguage) && typeof identifier === 'string' && identifier.trim())) as Partial<Record<AppLanguage, string>>,
   };
 }
-const defaultSecurity: SecuritySettings = { biometricProtection:false, pinEnabled:false, sensitiveDocumentsProtection:false, autoLockMinutes:5, cloudSyncEnabled:false, gmailAccessEnabled:false, aiProcessingEnabled:false, retentionPolicy:'1 Jahr', analyticsEnabled: false, localOnly: true, retentionDays: 365, permissions: { kamera: 'nicht_erfragt', dateien: 'nicht_erfragt', benachrichtigungen: 'nicht_erfragt' } };
+const defaultSecurity: SecuritySettings = { biometricProtection:false, pinEnabled:false, sensitiveDocumentsProtection:false, autoLockMinutes:0, cloudSyncEnabled:false, gmailAccessEnabled:false, aiProcessingEnabled:false, retentionPolicy:'1 Jahr', analyticsEnabled: false, localOnly: true, retentionDays: 365, permissions: { kamera: 'nicht_erfragt', dateien: 'nicht_erfragt', benachrichtigungen: 'nicht_erfragt' } };
 const blankCaseState = { cases: [] as CaseRecord[], relationships: [] as DocumentRelationship[], notifications: [] as NotificationRecord[], activities: [] as ActivityRecord[], exportPackages: [] as ExportPackage[], security: defaultSecurity, onboarding: { completed: false, language: 'Deutsch', privacyAccepted: false } as OnboardingState, family: { enabled: false, members: [], sharedHouseholdDocumentIds: [] } as FamilyWorkspace, business: { enabled: false, members: [], approvalRequired: true, documentOwnership:[], sharedInbox:'Coming Soon',auditLog:'Coming Soon' } as BusinessWorkspace, contracts: [] as ContractMonitor[], recurringCosts: [] as RecurringCost[], compareRecords: [] as import('@/utils/documentDomain').CompareRecord[], demoEnabled: false };
 const demoDocuments: DocumentRecord[] = [{ id:'demo-rechnung', title:'Demo: Stromrechnung', sender:'Stadtwerke', category:'Wohnen', subcategory:'Energie', documentType:'Rechnung', documentDate:'2026-03-01', dueDate:'2026-03-29', amount:'89,00 €', person:'Demo', status:'Zu bezahlen', tags:['demo','strom'], note:'Demo-Notiz', ocrText:'Absender: Stadtwerke\nRechnung\nGesamtbetrag: 89,00 EUR\nZahlbar bis 29.03.2026', createdAt:'2026-03-20T10:00:00.000Z', lifecycle:'aktiv', source:'file' } as DocumentRecord];
 const demoCases: CaseRecord[] = [{ id:'demo-fall', title:'Demo: Stromanbieter', status:'wartet_auf_antwort', profileIds:[], documentIds:['demo-rechnung'], taskIds:['demo-task'], dueDate:'2026-03-29', note:'Antwort prüfen', missingData:[{id:'demo-missing',title:'Kundennummer',type:'data',status:'fehlt'}], checklist:[{id:'demo-check',title:'Rechnung vorhanden',status:'vorhanden'}], timelineEvents:[{id:'demo-event',title:'Fall erstellt',date:'2026-03-20',kind:'activity'}],createdAt:'2026-03-20',updatedAt:'2026-03-20'}];
@@ -532,11 +535,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
          setSearchIndexRevision(parsed.searchIndexVersion === SEARCH_INDEX_VERSION ? (parsed.searchIndexRevision ?? 0) : 1);
          setSearchIndexRebuiltAt(parsed.searchIndexVersion === SEARCH_INDEX_VERSION ? parsed.searchIndexRebuiltAt : new Date().toISOString());
           setIntegrations(migrateIntegrationState(parsed.integrations));
-          setBackup({ ...defaultBackupState(), ...parsed.backup, accounts: parsed.backup?.accounts ?? [], snapshots: parsed.backup?.snapshots ?? [], automatic: { ...defaultBackupState().automatic, ...parsed.backup?.automatic }, audit: parsed.backup?.audit ?? [] });
+          setBackup({ ...defaultBackupState(), ...parsed.backup, accounts: requireCloudAccountRevalidation(parsed.backup?.accounts ?? []), snapshots: parsed.backup?.snapshots ?? [], automatic: { ...defaultBackupState().automatic, ...parsed.backup?.automatic, enabled: false, foregroundOnly: true }, audit: parsed.backup?.audit ?? [] });
         if (parsed.profiles) setProfiles(loadedProfiles);
         if (parsed.tasks) setTasks(parsed.tasks);
         if (parsed.settings) setSettings(migrateSettings(parsed.settings));
-         setDomain({ ...blankCaseState, cases: parsed.cases ?? [], relationships: parsed.relationships ?? [], notifications: parsed.notifications ?? [], activities: parsed.activities ?? [], exportPackages: parsed.exportPackages ?? [], security: { ...defaultSecurity, ...parsed.security, permissions: { ...defaultSecurity.permissions, ...parsed.security?.permissions } }, onboarding: parsed.onboarding ?? { ...blankCaseState.onboarding, completed: true }, family: parsed.family ?? blankCaseState.family, business: parsed.business ?? blankCaseState.business, contracts: parsed.contracts ?? [], recurringCosts: parsed.recurringCosts ?? [], demoEnabled: parsed.demoEnabled ?? false });
+         setDomain({ ...blankCaseState, cases: parsed.cases ?? [], relationships: parsed.relationships ?? [], notifications: parsed.notifications ?? [], activities: parsed.activities ?? [], exportPackages: parsed.exportPackages ?? [], security: disableUnenforcedSecurity({ ...defaultSecurity, ...parsed.security, permissions: { ...defaultSecurity.permissions, ...parsed.security?.permissions } }), onboarding: parsed.onboarding ?? { ...blankCaseState.onboarding, completed: true }, family: parsed.family ?? blankCaseState.family, business: parsed.business ?? blankCaseState.business, contracts: parsed.contracts ?? [], recurringCosts: parsed.recurringCosts ?? [], demoEnabled: parsed.demoEnabled ?? false });
          setDomain(current=>({...current,compareRecords:parsed.compareRecords??[]}));
       })
       .catch(() => undefined)
@@ -640,7 +643,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    const addExportPackage = useCallback((item: ExportPackage) => { setDomain((current) => ({ ...current, exportPackages: [item, ...current.exportPackages] })); addActivity('export', `Exportpaket vorbereitet: ${item.recipient || 'ohne Empfänger'}`); }, [addActivity]);
    const setLifecycle = useCallback((id: string, lifecycle: 'aktiv' | 'archiviert' | 'papierkorb') => { setDocuments((current) => current.map((d) => d.id === id ? { ...d, lifecycle } : d)); addActivity('archiv', `Dokument ${lifecycle}: ${id}`); }, [addActivity]);
      const permanentlyDeleteDocument = useCallback((id: string) => { const title=documents.find(d=>d.id===id)?.title??'Dokument'; const removedActionIds=new Set(actions.filter(item=>item.documentId===id).map(item=>item.id)); const keepCandidate=(item:{documentId?:string;actionId?:string})=>item.documentId!==id&&(!item.actionId||!removedActionIds.has(item.actionId)); setDocuments((current) => current.filter((d) => d.id !== id)); setTasks(current=>cleanupDeletedDocument(id,domain.cases,domain.relationships,current).tasks); setActions(current=>current.filter(item=>item.documentId!==id)); setReminders(current=>current.filter(keepCandidate)); setFollowUps(current=>current.filter(keepCandidate)); setReplyDrafts(current=>current.filter(keepCandidate)); setCalendarCandidates(current=>current.filter(keepCandidate)); setConversations(current=>current.filter(record=>record.documentId!==id)); setConversationThreads(current=>{const next={...current}; delete next[id]; return next;}); setExplanationStates(current=>{const next={...current}; delete next[id]; return next;}); setAssistantMessages(current=>current.filter(record=>record.documentId!==id&&!record.resultIds?.includes(id))); setSearchHistory(current=>current.map(record=>({...record,resultIds:record.resultIds.filter(resultId=>resultId!==id)})).filter(record=>record.resultIds.length>0)); setAssistantContext(current=>current.documentId===id?emptySearchContext:current); setDomain(current=>{const cleaned=cleanupDeletedDocument(id,current.cases,current.relationships,[]); return {...current,cases:cleaned.cases,relationships:cleaned.relationships};}); addActivity('archiv', `Dokument endgültig gelöscht: ${title}`); }, [addActivity, actions, documents, domain.cases, domain.relationships]);
-   const updateSecurity = useCallback((item: Partial<SecuritySettings>) => setDomain((current) => ({ ...current, security: { ...current.security, ...item } })), []);
+   const updateSecurity = useCallback((item: Partial<SecuritySettings>) => {
+     const { biometricProtection: _biometric, pinEnabled: _pin, autoLockMinutes: _autoLock, ...enforced } = item;
+     setDomain((current) => ({ ...current, security: disableUnenforcedSecurity({ ...current.security, ...enforced }) }));
+   }, []);
    const completeOnboarding = useCallback((item: OnboardingState) => setDomain((current) => ({ ...current, onboarding: item })), []);
    const setDemoEnabled = useCallback((demoEnabled: boolean) => setDomain((current) => ({ ...current, demoEnabled })), []);
    const markGeneratedNotificationRead = useCallback((id: string) => setDomain(current => ({...current, notifications: current.notifications.some(n=>n.id===id) ? current.notifications.map(n=>n.id===id?{...n,read:true}:n) : [{id,kind:'neu',title:'Hinweis gelesen',body:'',read:true,createdAt:new Date().toISOString()},...current.notifications]})), []);
@@ -941,7 +947,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setSettings(migrateSettings(raw.settings)); setActions(mergeDerivedActions(restoredActions.actions, restoredDocuments)); setReminders(restoredActions.reminders); setFollowUps(restoredActions.followUps); setReplyDrafts(restoredActions.replyDrafts); setCalendarCandidates(restoredActions.calendarCandidates); setAutomationRules(restoredActions.automationRules);
     setConversations(raw.conversations ?? []); setConversationThreads(raw.conversationThreads ?? {}); setExplanationStates(raw.explanationStates ?? {}); setAssistantContext(raw.assistantContext ?? emptySearchContext); setAssistantMessages(raw.assistantMessages ?? []); setSearchHistory(raw.searchHistory ?? []);
     setSearchIndexRevision(Number(raw.searchIndexRevision ?? 0) + 1); setSearchIndexRebuiltAt(new Date().toISOString()); setIntegrations(reconnecting);
-    setDomain({ ...blankCaseState, cases: raw.cases ?? [], relationships: raw.relationships ?? [], notifications: raw.notifications ?? [], activities: raw.activities ?? [], exportPackages: raw.exportPackages ?? [], security: { ...defaultSecurity, ...raw.security }, onboarding: raw.onboarding ?? blankCaseState.onboarding, family: raw.family ?? blankCaseState.family, business: raw.business ?? blankCaseState.business, contracts: raw.contracts ?? [], recurringCosts: raw.recurringCosts ?? [], compareRecords: raw.compareRecords ?? [], demoEnabled: raw.demoEnabled ?? false });
+    setDomain({ ...blankCaseState, cases: raw.cases ?? [], relationships: raw.relationships ?? [], notifications: raw.notifications ?? [], activities: raw.activities ?? [], exportPackages: raw.exportPackages ?? [], security: disableUnenforcedSecurity({ ...defaultSecurity, ...raw.security }), onboarding: raw.onboarding ?? blankCaseState.onboarding, family: raw.family ?? blankCaseState.family, business: raw.business ?? blankCaseState.business, contracts: raw.contracts ?? [], recurringCosts: raw.recurringCosts ?? [], compareRecords: raw.compareRecords ?? [], demoEnabled: raw.demoEnabled ?? false });
   }, []);
   const connectGoogleDriveBackup = useCallback(async () => {
     const connected = await connectGoogleDriveBackupProvider();
@@ -956,7 +962,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [backupAdapter]);
   const disconnectGoogleDriveBackup = useCallback(async () => {
     const account = backup.accounts.find(item => item.providerType === 'google_drive'); if (!account) return;
-    await backupAdapter().disconnect(account.id); setBackup(current => ({ ...current, accounts: current.accounts.filter(item => item.id !== account.id), snapshots: [], error: undefined }));
+    await backupAdapter().disconnect(account.id); setBackup(current => ({ ...current, accounts: current.accounts.filter(item => item.id !== account.id), snapshots: [], automatic: { ...current.automatic, enabled: false, foregroundOnly: true }, error: undefined }));
   }, [backup, backupAdapter]);
   const createCloudBackup = useCallback(async (passphrase: string) => {
     const account = backup.accounts.find(item => item.providerType === 'google_drive' && item.status === 'connected');

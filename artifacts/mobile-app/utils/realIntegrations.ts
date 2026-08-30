@@ -59,7 +59,8 @@ export type ImapPresetKey = keyof typeof IMAP_PRESETS;
 export type ImapConfig = { host: string; port: number; tls: true; preset?: ImapPresetKey };
 
 export function providerSetups(env: Record<string, string | undefined> = {}, redirectUri = ''): ProviderSetup[] {
-  const googleClientId = env.EXPO_PUBLIC_GOOGLE_CLIENT_ID?.trim() ?? '';
+  const rawGoogleClientId = env.EXPO_PUBLIC_GOOGLE_CLIENT_ID?.trim() ?? '';
+  const googleClientId = /^\d+-[a-z0-9_-]+\.apps\.googleusercontent\.com$/i.test(rawGoogleClientId) ? rawGoogleClientId : '';
   const microsoftClientId = env.EXPO_PUBLIC_MICROSOFT_CLIENT_ID?.trim() ?? '';
   const safeRedirect = redirectUri || env.EXPO_PUBLIC_OAUTH_REDIRECT_URI?.trim() || '';
   return [

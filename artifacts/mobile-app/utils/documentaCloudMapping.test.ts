@@ -1,8 +1,8 @@
 import { analyzeDocumentIntelligence } from './documentIntelligence';
-import { mergeCloudEvidence, mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks } from './documentaCloudMapping';
+import { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline } from './documentaCloudMapping';
 
 declare function require(name: string): any;
-const test: (name: string, body: () => void) => void = require('node:test');
+const test: (name: string, body: () => void | Promise<void>) => void = require('node:test');
 const assert = require('node:assert/strict');
 
 test('cloud mapping accepts only validated exact OCR spans and keeps sensitive claims review-only', () => {
@@ -38,6 +38,22 @@ test('cloud mapping rejects low-confidence, invalid, and mismatched evidence', (
   }
 });
 
+test('invoice cloud suggestions are exact evidence-backed review values', () => {
+  const source = 'Rosenhof GmbH\nRechnung Nr.: RH-17\nGesamtbetrag: 119,00 EUR';
+  const invoiceStart = source.indexOf('RH-17');
+  const amountStart = source.indexOf('119,00 EUR');
+  const fields = normalizeCloudFields([
+    { name: 'invoiceNumber', value: 'RH-17', confidence: .9, validationState: 'VALIDATED', evidence: [{ text: 'RH-17', start: invoiceStart, end: invoiceStart + 5 }] },
+    { name: 'amount', value: '119,00 EUR', confidence: .9, validationState: 'VALIDATED', evidence: [{ text: '119,00 EUR', start: amountStart, end: amountStart + 10 }] },
+    { name: 'sender', value: 'Invented', confidence: .9, validationState: 'VALIDATED', evidence: [{ text: 'Rosenhof', start: 0, end: 8 }] },
+  ]);
+  const suggestions = cloudReviewSuggestions({ family: 'financial', type: 'invoice', confidence: .9, fields }, source);
+  assert.deepEqual(suggestions, {
+    invoiceNumber: { value: 'RH-17', provenance: 'cloud_evidence' },
+    amount: { value: '119,00 EUR', provenance: 'cloud_evidence' },
+  });
+});
+
 test('canonical API field arrays become exact-span keyed facts, while sensitive families remain review-only', () => {
   const text = 'A simple letter';
   const fields = normalizeCloudFields([{
@@ -49,6 +65,20 @@ test('canonical API field arrays become exact-span keyed facts, while sensitive 
   const applied = mergeCloudEvidence(local, { family: 'correspondence', type: 'letter', confidence: .9, fields }, text);
   assert.equal(applied.taxonomy.subtype.value, 'letter');
   assert.equal(mergeCloudEvidence(local, { family: 'financial', type: 'letter', confidence: .9, fields }, text), local);
+});
+
+test('normalizes common Gemini invoice field aliases for review suggestions', () => {
+  const source = 'Rosenhof Schultheis e.K.\nMwSt.: 2,15 EUR';
+  const fields = normalizeCloudFields([
+    { name: 'vendor_name', value: 'Rosenhof Schultheis e.K.', confidence: 0.98, validationState: 'PARTIALLY_VALIDATED', evidence: [{ text: 'Rosenhof Schultheis e.K.', start: 0, end: 24, pageIndex: 0 }] },
+    { name: 'vat_amount', value: '2,15 EUR', confidence: 0.98, validationState: 'PARTIALLY_VALIDATED', evidence: [{ text: '2,15 EUR', start: 32, end: 40, pageIndex: 0 }] },
+  ]);
+  assert.equal(fields?.sender.value, 'Rosenhof Schultheis e.K.');
+  assert.equal(fields?.vatAmount.value, '2,15 EUR');
+  assert.deepEqual(cloudReviewSuggestions({ family: 'financial', type: 'invoice', confidence: 0.98, fields }, source), {
+    sender: { value: 'Rosenhof Schultheis e.K.', provenance: 'cloud_evidence' },
+    vatAmount: { value: '2,15 EUR', provenance: 'cloud_evidence' },
+  });
 });
 
 test('twelve cloud OCR pages are planned in max-five chunks and merged in global order', () => {
@@ -77,4 +107,99 @@ test('cloud facts validate against the stored Gemini source rather than the loca
   const cloud = { family: 'correspondence', type: 'letter', confidence: .9, fields, sourceText: cloudSource };
   assert.equal(mergeCloudEvidence(local, cloud, localText), local);
   assert.equal(mergeCloudEvidence(local, cloud, cloud.sourceText).taxonomy.subtype.value, 'letter');
+});
+
+test('scan cloud pipeline makes opt-in a hard provider boundary', async () => {
+  let remoteCalls = 0;
+  const result = await runScanCloudPipeline({
+    optedIn: false,
+    localText: 'local text',
+    localOcrStatus: 'complete',
+    title: 'Letter',
+    pageUris: ['page.jpg'],
+  }, {
+    uploadDocumentAiOcr: async () => {
+      remoteCalls += 1;
+      return { text: 'cloud text', pages: [] };
+    },
+    processGemini: async () => {
+      remoteCalls += 1;
+      return { family: 'correspondence', type: 'letter', confidence: .9 };
+    },
+  });
+  assert.equal(remoteCalls, 0);
+  assert.equal(result.pipeline.cloudState, 'offline');
+  assert.equal(result.pipeline.documentAiOcr.state, 'not_requested');
+  assert.equal(result.pipeline.gemini.state, 'not_requested');
+  assert.equal(result.pipeline.finalProvider, 'local_only');
+});
+
+test('Document AI failure is persisted when Gemini explicitly falls back to local OCR', async () => {
+  const result = await runScanCloudPipeline({
+    optedIn: true,
+    localText: 'local letter',
+    localOcrStatus: 'complete',
+    title: 'Letter',
+    pageUris: ['page.jpg'],
+  }, {
+    uploadDocumentAiOcr: async () => {
+      throw Object.assign(new Error('Document AI timed out.'), { state: 'unavailable' });
+    },
+    processGemini: async (text) => {
+      assert.equal(text, 'local letter');
+      return { family: 'correspondence', type: 'letter', confidence: .9 };
+    },
+  });
+  assert.equal(result.pipeline.documentAiOcr.state, 'failed');
+  assert.equal(result.pipeline.gemini.state, 'succeeded');
+  assert.equal(result.pipeline.gemini.input, 'local_ocr');
+  assert.equal(result.pipeline.fallbackUsed, true);
+  assert.equal(result.pipeline.failureReason, 'service_unavailable');
+  assert.equal(result.pipeline.finalProvider, 'local_ocr_gemini');
+  assert.equal(result.pipeline.cloudState, 'cloud');
+  assert.equal(result.cloudIntelligence?.sourceText, 'local letter');
+});
+
+test('scan cloud pipeline never reports Gemini success when no OCR source can be used', async () => {
+  let geminiCalls = 0;
+  const result = await runScanCloudPipeline({
+    optedIn: true,
+    localText: '',
+    localOcrStatus: 'failed',
+    title: 'Unreadable',
+    pageUris: ['page.jpg'],
+  }, {
+    uploadDocumentAiOcr: async () => {
+      throw Object.assign(new Error('Quota exhausted.'), { state: 'quota' });
+    },
+    processGemini: async () => {
+      geminiCalls += 1;
+      return { family: 'unknown', type: 'unknown', confidence: 0 };
+    },
+  });
+  assert.equal(geminiCalls, 0);
+  assert.equal(result.pipeline.localOcr.state, 'failed');
+  assert.equal(result.pipeline.documentAiOcr.state, 'failed');
+  assert.equal(result.pipeline.gemini.state, 'skipped');
+  assert.equal(result.pipeline.cloudState, 'quota');
+  assert.deepEqual(result.pipeline.failures.map((failure) => failure.stage), ['local_ocr', 'document_ai_ocr']);
+});
+
+test('successful Document AI OCR is the recorded Gemini provenance', async () => {
+  const result = await runScanCloudPipeline({
+    optedIn: true,
+    localText: 'local text',
+    localOcrStatus: 'complete',
+    title: 'Letter',
+    pageUris: ['page.jpg'],
+  }, {
+    uploadDocumentAiOcr: async () => ({ text: 'cloud letter', pages: [{ pageIndex: 0, text: 'cloud letter' }] }),
+    processGemini: async () => ({ family: 'correspondence', type: 'letter', confidence: .9 }),
+  });
+  assert.equal(result.pipeline.documentAiOcr.state, 'succeeded');
+  assert.equal(result.pipeline.gemini.state, 'succeeded');
+  assert.equal(result.pipeline.gemini.input, 'document_ai_ocr');
+  assert.equal(result.pipeline.fallbackUsed, false);
+  assert.equal(result.pipeline.finalProvider, 'document_ai_gemini');
+  assert.equal(result.pipeline.failures.length, 0);
 });

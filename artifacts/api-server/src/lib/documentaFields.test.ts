@@ -9,7 +9,13 @@ test("accepts only evidence-backed Gemini fields", () => {
     { name: "invented", value: "99 EUR", confidence: 1, validationState: "VALIDATED", evidence: [{ text: "42 EUR", start: 14, end: 20 }] },
     { name: "bad", value: "Invoice", confidence: 2, validationState: "VALIDATED", evidence: [{ text: "Invoice", start: 0, end: 7 }] },
   ], source);
-  assert.deepEqual(result, [{ name: "total", value: "42 EUR", confidence: 0.9, validationState: "VALIDATED", evidence: [{ text: "42 EUR", start: 14, end: 20, pageIndex: 0 }] }]);
+  assert.deepEqual(result, [{ name: "total", value: "42 EUR", confidence: 0.9, validationState: "PARTIALLY_VALIDATED", provenance: "model", evidence: [{ text: "42 EUR", start: 14, end: 20, pageIndex: 0 }] }]);
+});
+
+test("requires an unmodified literal OCR value, including whitespace", () => {
+  assert.deepEqual(parseGeminiFields([
+    { name: "amount", value: "42 EUR", confidence: 1, validationState: "VALIDATED", evidence: [{ text: " 42 EUR", start: 0, end: 7 }] },
+  ], " 42 EUR"), []);
 });
 
 test("rejects malformed arrays and out-of-range spans", () => {

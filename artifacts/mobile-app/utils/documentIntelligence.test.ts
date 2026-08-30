@@ -20,6 +20,35 @@ test('classifies all German taxonomy groups with evidence', () => {
   });
 });
 
+test('Rosenhof invoice evidence defeats incidental payroll-like wording', () => {
+  const text = `Absender: Rosenhof Schultheis e.K.
+Empfänger: Katalin Hemperger
+Rechnung
+Rechnungsnummer: 400123
+Kundennummer: 1276556
+Rechnungsdatum: 14.07.2026
+Abrechnung Netto: 30.65 EUR
+MwSt.: 2.15 EUR
+Gesamtbetrag: 32.80 EUR
+zahlbar sofort ohne Abzug`;
+  const result = analyzeDocumentIntelligence({ text });
+
+  assert.equal(result.taxonomy.mainCategory.value, 'finance');
+  assert.equal(result.taxonomy.subtype.value, 'invoice');
+  assert.notEqual(result.taxonomy.subtype.value, 'payroll');
+  assert.equal(result.parties.sender.value, 'Rosenhof Schultheis e.K.');
+  assert.equal(result.parties.recipient.value, 'Katalin Hemperger');
+  assert.equal(result.dates.documentDate.value, '2026-07-14');
+  assert.ok(result.identifiers.value?.some(identifier => identifier.value === '400123'));
+  assert.deepEqual(
+    result.amounts.items.map(item => item.value),
+    ['30.65 EUR', '2.15 EUR', '32.80 EUR'],
+  );
+  assert.equal(result.amounts.main.value, '32.80 EUR');
+  assert.match(text, /Kundennummer: 1276556/);
+  assert.match(text, /zahlbar sofort ohne Abzug/);
+});
+
 test('classifies all Hungarian taxonomy groups independently of UI language', () => {
   const fixtures: Array<[string, string]> = [
     ['Számla fizetendő', 'finance'],

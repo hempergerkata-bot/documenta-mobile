@@ -3,6 +3,7 @@ import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { db, documentaAuditEvents, documentaBatchJobs, documentaBatchPages, documentaCorrections, documentaDocuments, documentaEvidence, documentaIntelligence, documentaPages, documentaProviderUsage, documentaRelations, documentaSessionIssuance, documentaValidationRecords } from "@workspace/db";
 import { Router, type IRouter, type RequestHandler } from "express";
 import { mapFieldsToPages, OCR_PAGE_SEPARATOR, parseGeminiFields, type ParsedField } from "../lib/documentaFields";
+import { extractInvoiceEssentials, mergeEvidenceFields } from "../lib/documentaInvoiceFields";
 import { hasUnsupportedCloudMime, normalizeDocumentAiError } from "../lib/documentaProviderErrors";
 
 const router: IRouter = Router();
@@ -107,6 +108,7 @@ function classify(input: string): { family: Family; type: string; confidence: nu
     ["commerce", "receipt", /\b(receipt|cash register|nyugta|blokk|kassenbon|quittung)\b/i],
     ["commerce", "product_or_warranty", /\b(warranty|serial number|repair|garancia|jótállás|javítás|garantie|seriennummer|reparatur)\b/i],
     ["commerce", "online_order", /\b(order confirmation|shipping|return|refund|rendelés|szállítás|visszaküldés|bestellung|versand|retoure)\b/i],
+    ["financial", "invoice", /\b(invoice|rechnung|számla)\b/i],
     ["financial", "financial_document", /\b(bank statement|loan|credit|iban|bankszámla|hitel|kontoauszug|darlehen|kredit)\b/i],
     ["employment", "hr_document", /\b(salary|employment|payslip|munkaviszony|fizetési jegyzék|gehalt|arbeitsvertrag|lohnabrechnung)\b/i],
     ["tax", "tax_document", /\b(tax|adó|steuer|finanzamt)\b/i],
@@ -114,7 +116,7 @@ function classify(input: string): { family: Family; type: string; confidence: nu
     ["legal", "contract", /\b(contract|agreement|termination|szerződés|felmondás|vertrag|kündigung|vereinbarung)\b/i],
     ["housing", "real_estate_document", /\b(lease|rent|property|bérlet|ingatlan|mietvertrag|miete|immobilie)\b/i],
     ["education", "education_document", /\b(school|university|certificate|iskola|egyetem|bizonyítvány|schule|universität|zeugnis)\b/i],
-    ["utilities", "bill_or_invoice", /\b(invoice|bill|utility|számla|közmű|rechnung|abrechnung|kwh)\b/i],
+    ["utilities", "utility_bill", /\b(utility|közmű|kwh|strom|erdgas|gasrechnung)\b/i],
     ["travel", "logistics_document", /\b(tracking|delivery note|consignment|fuvarlevél|kézbesítés|sendung|lieferschein)\b/i],
     ["vehicle", "vehicle_document", /\b(vehicle|registration|service record|jármű|forgalmi|gépjármű|fahrzeug|zulassung|hauptuntersuchung)\b/i],
   ];
@@ -156,7 +158,14 @@ async function documentAiOcr(userId: string, pages: CloudPage[], operationPrefix
   try { credentials = JSON.parse(credentialsJson) as object; } catch { throw new Error("document_ai_not_configured"); }
   try {
     const { DocumentProcessorServiceClient } = await (new Function("specifier", "return import(specifier)")("@google-cloud/documentai") as Promise<any>);
-    const client = new DocumentProcessorServiceClient({ credentials });
+    const location = /^projects\/[^/]+\/locations\/([^/]+)\/processors\/[^/]+$/.exec(processorName)?.[1];
+    if (!location || !/^[a-z0-9-]+$/i.test(location)) throw new Error("document_ai_not_configured");
+    // Document AI is regional. The default SDK endpoint is US and rejects EU
+    // processor names even when IAM and the processor resource are valid.
+    const client = new DocumentProcessorServiceClient({
+      credentials,
+      apiEndpoint: `${location}-documentai.googleapis.com`,
+    });
     const texts: string[] = [];
     for (const [index, page] of pages.entries()) {
       const usage = await reserveProvider(userId, "google_document_ai", "enterprise_document_ocr", `${operationPrefix}:document-ai:${index}`, 1, 0);
@@ -216,8 +225,11 @@ async function callGemini(userId: string, operationId: string, ocrText: string, 
   // Keep the SDK server-only. Indirect dynamic import also makes a missing optional
   // deployment dependency an explicit runtime cloud error rather than client bundling.
   const { GoogleGenAI } = await (new Function("specifier", "return import(specifier)")("@google/genai") as Promise<{ GoogleGenAI: new (options: { apiKey: string }) => { models: { generateContent: (input: unknown) => Promise<{ text?: string }> } } }>);
-  const model = usePro ? "gemini-2.5-pro" : "gemini-2.5-flash";
-  const prompt = "Return only JSON with family, type, summary, confidence (0..1), and fields array. Each field needs name,value,confidence,validationState,evidence:[{text,start,end,pageIndex}]. Evidence text must exactly equal OCR.slice(start,end). Do not infer facts absent from OCR. Hints may improve labels but cannot add facts: " + correctionHints.join(", ").slice(0, 2000) + "\nOCR:\n" + ocrText;
+  // Gemini 2.5 is listed by the models endpoint but rejects newly provisioned
+  // API keys at generation time. Keep these names aligned with models that the
+  // configured project can actually invoke.
+  const model = usePro ? "gemini-3.1-pro-preview" : "gemini-3.6-flash";
+  const prompt = `Return only JSON matching this schema: {"family": one of ${JSON.stringify(DOCUMENT_FAMILIES)}, "type":string, "summary":string, "confidence":number 0..1, "fields":[{"name":string,"value":string,"confidence":number 0..1,"validationState":"UNVALIDATED"|"PARTIALLY_VALIDATED"|"VALIDATED"|"INVALID","evidence":[{"text":string,"start":integer,"end":integer,"pageIndex":integer}]}]}. family MUST be one listed value, never unknown/novel. For EVERY field, value must be the literal OCR substring (no trimming, normalization, or inferred text), and evidence.text must exactly equal OCR.slice(start,end), using JavaScript UTF-16 offsets into the complete OCR string. Omit any field you cannot support with one exact span. Do not infer facts absent from OCR. Hints may improve labels but cannot add facts: ${correctionHints.join(", ").slice(0, 2000)}\nOCR:\n${ocrText}`;
   let lastError: unknown;
   const inputTokens = Math.ceil(prompt.length / 4);
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -332,12 +344,13 @@ router.post("/documenta/documents/process", async (request, response) => {
       const flash = await callGemini(request.documentaUserId!, `${processOperationId}:flash`, ocrText, false, hints);
       const confidence = typeof flash.result.confidence === "number" ? flash.result.confidence : 0;
       const family = DOCUMENT_FAMILIES.includes(flash.result.family as (typeof DOCUMENT_FAMILIES)[number]) ? flash.result.family as Family : "unknown/novel";
-      analysis = { family, type: text(flash.result.type, 100) ?? "unknown/novel", confidence, summary: text(flash.result.summary, 2000), model: flash.model, fields: parseGeminiFields(flash.result.fields, ocrText) };
+       analysis = { family: family === "unknown/novel" ? (local.family === "unknown/novel" ? "other" : local.family) : family, type: text(flash.result.type, 100) ?? local.type, confidence, summary: text(flash.result.summary, 2000), model: flash.model, fields: parseGeminiFields(flash.result.fields, ocrText) };
       // Pro is only attempted for low-confidence/invalid Flash output; quota remains auditable.
       if (confidence < 0.55 || family === "unknown/novel") {
         try {
           const pro = await callGemini(request.documentaUserId!, `${processOperationId}:pro`, ocrText, true, hints);
-          analysis = { family: DOCUMENT_FAMILIES.includes(pro.result.family as (typeof DOCUMENT_FAMILIES)[number]) ? pro.result.family as Family : "unknown/novel", type: text(pro.result.type, 100) ?? "unknown/novel", confidence: typeof pro.result.confidence === "number" ? pro.result.confidence : 0, summary: text(pro.result.summary, 2000), model: pro.model, fields: parseGeminiFields(pro.result.fields, ocrText) };
+           const proFamily = DOCUMENT_FAMILIES.includes(pro.result.family as (typeof DOCUMENT_FAMILIES)[number]) ? pro.result.family as Family : (local.family === "unknown/novel" ? "other" : local.family);
+           analysis = { family: proFamily, type: text(pro.result.type, 100) ?? local.type, confidence: typeof pro.result.confidence === "number" ? pro.result.confidence : 0, summary: text(pro.result.summary, 2000), model: pro.model, fields: parseGeminiFields(pro.result.fields, ocrText) };
         } catch (caught) {
           if (!(caught instanceof Error && caught.message === "pro_quota_unavailable")) throw caught;
         }
@@ -348,7 +361,7 @@ router.post("/documenta/documents/process", async (request, response) => {
       return error(response, 502, "cloud_processing_failed", "Cloud intelligence could not complete after retries.");
     }
   }
-  analysis.fields = mapFieldsToPages(analysis.fields, ocrPageTexts);
+  analysis.fields = mapFieldsToPages(mergeEvidenceFields(analysis.fields, extractInvoiceEssentials(ocrText)), ocrPageTexts);
   const userId = request.documentaUserId!;
   const [providerTotals] = await db.select({ estimatedEur: sql<number>`coalesce(sum(${documentaProviderUsage.estimatedEur}), 0)` }).from(documentaProviderUsage)
     .where(and(eq(documentaProviderUsage.userId, userId), eq(documentaProviderUsage.state, "SUCCEEDED"), sql`${documentaProviderUsage.operationId} like ${`${processOperationId}:%`}`));
@@ -364,7 +377,7 @@ router.post("/documenta/documents/process", async (request, response) => {
     }
     if (analysis.fields.length) {
       await tx.insert(documentaEvidence).values(analysis.fields.map((field) => ({ userId, intelligenceId: intelligenceRow.id, documentId: document.id, field: field.name, value: field.value, pageNumber: field.evidence[0].pageIndex + 1, startOffset: field.evidence[0].start, endOffset: field.evidence[0].end, confidence: field.confidence, validationState: field.validationState })));
-      await tx.insert(documentaValidationRecords).values(analysis.fields.map((field) => ({ userId, intelligenceId: intelligenceRow.id, field: field.name, state: field.validationState, rule: "model_span_verified" })));
+      await tx.insert(documentaValidationRecords).values(analysis.fields.map((field) => ({ userId, intelligenceId: intelligenceRow.id, field: field.name, state: field.validationState, rule: field.provenance === "deterministic" ? "deterministic_invoice_span_verified" : "model_span_verified" })));
     }
     if (extraction.iban) {
       const matches = await tx.select({ documentId: documentaPages.documentId }).from(documentaPages)

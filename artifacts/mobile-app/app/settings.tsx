@@ -7,7 +7,8 @@ import { useApp, type Settings } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/hooks/useTranslation';
 import { countryProfile } from '@/utils/countryRegistry';
-import { isExplanationLanguage, isReplyLanguage, isRtlLanguage, languageDefinition, LANGUAGE_OPTIONS } from '@/utils/localization';
+import { isRtlLanguage, languageDefinition, LANGUAGE_OPTIONS } from '@/utils/localization';
+import { LANGUAGE_CAPABILITIES, languageCapability, type CapabilityStatus, type LanguageCapability } from '@/utils/languageCapabilities';
 import { discoverLocalVoices, speakLocalExplanation } from '@/utils/nativeIntegrations';
 import { localVoicesForLocale, selectedLocalVoice, type LocalVoice } from '@/utils/ttsCapability';
 
@@ -19,6 +20,7 @@ export default function SettingsScreen() {
   const locale = languageDefinition(settings.explanationLanguage).locale;
   const preferredVoice = settings.explanationVoiceIdentifiers?.[settings.explanationLanguage];
   const selectedVoice = selectedLocalVoice(voices, locale, preferredVoice);
+  const compatibleVoices = localVoicesForLocale(voices, locale);
   const rtl = isRtlLanguage(language);
   const refreshVoices = useCallback(async () => {
     if (Platform.OS === 'web') { setVoices([]); return; }
@@ -37,9 +39,17 @@ export default function SettingsScreen() {
     <Text style={[styles.label, { color: colors.navy }]}>{t(label)}</Text>{hint ? <Text style={[styles.hint, { color: colors.mutedForeground }]}>{t(hint)}</Text> : null}
     <View style={styles.options}>{options.map(([value, text]) => <Pressable key={String(value)} accessibilityRole="radio" accessibilityState={{ checked: settings[key] === value }} onPress={() => updateSettings({ [key]: value } as Partial<Settings>)} style={[styles.option, { backgroundColor: settings[key] === value ? colors.coral : colors.muted }]}><Text style={{ color: settings[key] === value ? colors.white : colors.navy }}>{t(text)}</Text></Pressable>)}</View>
   </View>;
+  const capabilityLabel: Record<LanguageCapability, Parameters<typeof t>[0]> = { ui: 'settings.capabilityUi', documentRecognition: 'settings.capabilityRecognition', explanation: 'settings.capabilityExplanation', replies: 'settings.capabilityReplies', assistant: 'settings.capabilityAssistant', tts: 'settings.capabilityTts' };
+  const statusLabel: Record<CapabilityStatus, Parameters<typeof t>[0]> = { full: 'settings.capabilityFull', partial: 'settings.capabilityPartial', unsupported: 'settings.capabilityUnsupported' };
   const languageSetting = (key: 'appLanguage' | 'explanationLanguage' | 'replyLanguage', label: Parameters<typeof t>[0], hint: Parameters<typeof t>[0]) => <View style={[styles.group, { backgroundColor: colors.card, borderColor: colors.border }]}>
     <Text style={[styles.label, { color: colors.navy }]}>{t(label)}</Text><Text style={[styles.hint, { color: colors.mutedForeground }]}>{t(hint)}</Text>
-    <View style={styles.options}>{LANGUAGE_OPTIONS.map(({ code, label: name }) => { const supported = key === 'appLanguage' || (key === 'explanationLanguage' ? isExplanationLanguage(code) : isReplyLanguage(code)); return <Pressable key={code} testID={`language-${key}-${code}`} accessibilityRole="radio" accessibilityState={{ checked: settings[key] === code }} onPress={() => updateSettings({ [key]: code } as Partial<Settings>)} style={[styles.option, { backgroundColor: settings[key] === code ? colors.coral : colors.muted }]}><Text numberOfLines={1} style={{ color: settings[key] === code ? colors.white : colors.navy }}>{name}</Text>{key !== 'appLanguage' ? <Text style={[styles.small, { color: settings[key] === code ? colors.white : colors.mutedForeground }]}>{t(supported ? 'settings.adapterSupported' : 'settings.adapterUnsupported')}</Text> : null}</Pressable>; })}</View>
+    <View style={styles.options}>{LANGUAGE_OPTIONS.map(({ code, label: name }) => {
+      const capabilities: readonly LanguageCapability[] = key === 'appLanguage' ? LANGUAGE_CAPABILITIES : [key === 'explanationLanguage' ? 'explanation' : 'replies'];
+      return <Pressable key={code} testID={`language-${key}-${code}`} accessibilityRole="radio" accessibilityState={{ checked: settings[key] === code }} onPress={() => updateSettings({ [key]: code } as Partial<Settings>)} style={[styles.option, { backgroundColor: settings[key] === code ? colors.coral : colors.muted }]}>
+        <Text numberOfLines={1} style={{ color: settings[key] === code ? colors.white : colors.navy }}>{name}</Text>
+        {capabilities.map(capability => <Text key={capability} style={[styles.small, { color: settings[key] === code ? colors.white : colors.mutedForeground }]}>{t(capabilityLabel[capability])}: {t(statusLabel[languageCapability(code, capability)])}</Text>)}
+      </Pressable>;
+    })}</View>
   </View>;
   const selectedCountry = countryProfile(settings.residenceCountry);
   return <ScrollView style={{ flex: 1, backgroundColor: colors.background }} contentContainerStyle={[styles.page, { paddingTop: (Platform.OS === 'web' ? 67 : inset.top) + 16 }]}>
@@ -60,14 +70,14 @@ export default function SettingsScreen() {
     <View style={[styles.group, { backgroundColor: colors.card, borderColor: colors.border }]}>
       <Text style={[styles.label, { color: colors.navy, textAlign: rtl ? 'right' : 'left' }]}>{t('settings.voiceSelection')}</Text>
       <Text style={[styles.hint, { color: colors.mutedForeground, textAlign: rtl ? 'right' : 'left' }]}>{t('settings.voiceHint')}</Text>
-      <Pressable accessibilityRole="radio" accessibilityState={{ checked: !preferredVoice }} onPress={() => updateSettings({ explanationVoiceIdentifiers: { ...settings.explanationVoiceIdentifiers, [settings.explanationLanguage]: undefined } })} style={[styles.voiceOption, { borderColor: !preferredVoice ? colors.coral : colors.border, backgroundColor: colors.muted }]}>
+       <Pressable accessibilityRole="radio" accessibilityState={{ checked: !preferredVoice && compatibleVoices.length > 0, disabled: compatibleVoices.length === 0 }} disabled={compatibleVoices.length === 0} onPress={() => updateSettings({ explanationVoiceIdentifiers: { ...settings.explanationVoiceIdentifiers, [settings.explanationLanguage]: undefined } })} style={[styles.voiceOption, { borderColor: !preferredVoice && compatibleVoices.length > 0 ? colors.coral : colors.border, backgroundColor: colors.muted, opacity: compatibleVoices.length ? 1 : .45 }]}>
         <Text style={{ color: colors.navy, textAlign: rtl ? 'right' : 'left' }}>{t('settings.voiceAutomatic')}</Text>
       </Pressable>
-      {localVoicesForLocale(voices, locale).map((voice) => <Pressable key={voice.identifier ?? voice.name} accessibilityRole="radio" accessibilityState={{ checked: preferredVoice === voice.identifier }} onPress={() => updateSettings({ explanationVoiceIdentifiers: { ...settings.explanationVoiceIdentifiers, [settings.explanationLanguage]: voice.identifier } })} style={[styles.voiceOption, { borderColor: preferredVoice === voice.identifier ? colors.coral : colors.border, backgroundColor: colors.muted }]}>
+       {compatibleVoices.map((voice) => <Pressable key={voice.identifier ?? voice.name} accessibilityRole="radio" accessibilityState={{ checked: preferredVoice === voice.identifier }} onPress={() => updateSettings({ explanationVoiceIdentifiers: { ...settings.explanationVoiceIdentifiers, [settings.explanationLanguage]: voice.identifier } })} style={[styles.voiceOption, { borderColor: preferredVoice === voice.identifier ? colors.coral : colors.border, backgroundColor: colors.muted }]}>
         <Text style={{ color: colors.navy, textAlign: rtl ? 'right' : 'left', writingDirection: rtl ? 'rtl' : 'ltr' }}>{voice.name ?? voice.identifier}</Text>
         <Text style={[styles.small, { color: colors.mutedForeground, textAlign: rtl ? 'right' : 'left' }]}>{voice.lang} · {t('settings.voiceQuality')}: {voice.quality ?? '–'}</Text>
       </Pressable>)}
-      {!loadingVoices && !localVoicesForLocale(voices, locale).length ? <Text style={[styles.hint, { color: colors.mutedForeground }]}>{t('settings.voiceNone')}</Text> : null}
+       {!loadingVoices && !compatibleVoices.length ? <Text accessibilityRole="alert" style={[styles.hint, { color: colors.coral }]}>{t('settings.voiceNone')}</Text> : null}
       <View style={[styles.controls, { flexDirection: rtl ? 'row-reverse' : 'row' }]}>
         <Pressable accessibilityRole="button" accessibilityLabel={t('settings.voiceRefresh')} onPress={refreshVoices} style={[styles.option, { backgroundColor: colors.muted }]}><Text style={{ color: colors.navy }}>{loadingVoices ? t('common.loading') : t('settings.voiceRefresh')}</Text></Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel={t('settings.voicePreview')} disabled={!selectedVoice || Platform.OS === 'web'} onPress={() => speakLocalExplanation(t('settings.voicePreview'), { language: locale, voice: selectedVoice?.identifier, rate: settings.speechRate === 'langsam' ? .8 : settings.speechRate === 'schnell' ? 1.2 : 1 })} style={[styles.option, { backgroundColor: colors.muted, opacity: selectedVoice && Platform.OS !== 'web' ? 1 : .45 }]}><Text style={{ color: colors.navy }}>{t('settings.voicePreview')}</Text></Pressable>

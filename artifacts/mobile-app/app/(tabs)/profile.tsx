@@ -12,7 +12,7 @@ export default function ProfileScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const [profileName, setProfileName] = useState('');
-  const { profiles, addProfile, renameProfile, demoEnabled, setDemoEnabled, security, updateSecurity } = useApp();
+  const { profiles, addProfile, renameProfile, demoEnabled, setDemoEnabled } = useApp();
   const { t, language } = useTranslation();
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
   const rows = [
@@ -47,7 +47,7 @@ export default function ProfileScreen() {
           <View style={styles.row}>
             <View style={[styles.rowIcon, { backgroundColor: colors.sage }]}><Feather name="shield" size={17} color={colors.sageDeep} /></View>
             <View style={styles.rowCopy}><Text style={[styles.rowTitle, { color: colors.navy }]}>{t('onboarding.privacy')}</Text><Text style={[styles.rowDetail, { color: colors.mutedForeground }]}>{t('automation.localOnly')}</Text></View>
-            <Switch value={security.biometricProtection} onValueChange={(biometricProtection) => updateSecurity({ biometricProtection })} trackColor={{ false: colors.muted, true: colors.coral }} thumbColor={colors.white} testID="biometric-switch" />
+            <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
           </View>
           <View style={[styles.divider, { backgroundColor: colors.border }]} />
           {rows.map((row) => (

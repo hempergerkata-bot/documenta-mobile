@@ -4,6 +4,7 @@ export type ParsedField = {
   confidence: number;
   validationState: "UNVALIDATED" | "PARTIALLY_VALIDATED" | "VALIDATED" | "INVALID";
   evidence: Array<{ text: string; start: number; end: number; pageIndex: number }>;
+  provenance?: "model" | "deterministic" | "model+deterministic";
 };
 
 const STATES = new Set<ParsedField["validationState"]>(["UNVALIDATED", "PARTIALLY_VALIDATED", "VALIDATED", "INVALID"]);
@@ -17,7 +18,7 @@ export function parseGeminiFields(value: unknown, source: string): ParsedField[]
     const raw = item as Record<string, unknown>;
     const evidence = Array.isArray(raw.evidence) ? raw.evidence[0] as Record<string, unknown> | undefined : undefined;
     const name = typeof raw.name === "string" ? raw.name.trim() : "";
-    const fieldValue = typeof raw.value === "string" ? raw.value.trim() : "";
+    const fieldValue = typeof raw.value === "string" ? raw.value : "";
     const confidence = raw.confidence;
     const state = raw.validationState;
     const startOffset = evidence?.start;
@@ -29,9 +30,14 @@ export function parseGeminiFields(value: unknown, source: string): ParsedField[]
       typeof state !== "string" || !STATES.has(state as ParsedField["validationState"]) ||
       typeof startOffset !== "number" || !Number.isInteger(startOffset) || startOffset < 0 ||
       typeof endOffset !== "number" || !Number.isInteger(endOffset) || endOffset <= startOffset || endOffset > source.length ||
-      typeof evidenceText !== "string" || evidenceText !== source.slice(startOffset, endOffset) || evidenceText.trim() !== fieldValue ||
+       typeof evidenceText !== "string" || evidenceText !== source.slice(startOffset, endOffset) || evidenceText !== fieldValue ||
       (pageIndex !== undefined && (typeof pageIndex !== "number" || !Number.isInteger(pageIndex) || pageIndex < 0))) continue;
-    fields.push({ name, value: fieldValue, confidence, validationState: state as ParsedField["validationState"], evidence: [{ text: evidenceText, start: startOffset, end: endOffset, pageIndex: typeof pageIndex === "number" ? pageIndex : 0 }] });
+    // Passing every exact-span check proves that the value occurs in the OCR
+    // source, but it does not prove the model's semantic label. Promote only to
+    // PARTIALLY_VALIDATED so clients may show it for human review, never as a
+    // canonical automatically accepted fact.
+    const validationState = state === "INVALID" ? "INVALID" : "PARTIALLY_VALIDATED";
+    fields.push({ name, value: fieldValue, confidence, validationState, provenance: "model", evidence: [{ text: evidenceText, start: startOffset, end: endOffset, pageIndex: typeof pageIndex === "number" ? pageIndex : 0 }] });
   }
   return fields;
 }

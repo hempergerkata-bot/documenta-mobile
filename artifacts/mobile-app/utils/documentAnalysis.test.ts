@@ -1,6 +1,9 @@
-import assert from 'node:assert/strict';
-import test from 'node:test';
 import { analyzeGermanDocumentText } from './documentAnalysis';
+
+// Avoid a project-wide @types/node dependency while still using node's test runner.
+declare function require(name: string): any;
+const test: (name: string, body: () => void) => void = require('node:test');
+const assert = require('node:assert/strict');
 
 test('extracts evidence-backed fields from a German payroll statement', () => {
   const result = analyzeGermanDocumentText(`
@@ -326,6 +329,49 @@ test('extracts invoice identifiers without payroll-specific assumptions', () => 
   assert.equal(result.fields.customerNumber?.value, 'K-44028');
   assert.equal(result.fields.iban?.value, 'DE02120300000000202051');
   assert.equal(result.fields.amount?.value, '149,90 EUR');
+});
+
+test('classifies the Rosenhof invoice as finance instead of payroll', () => {
+  const rosenhofText = `
+    Rosenhof Schultheis e.K.
+    Katalin Hemperger
+    Weberstraße 25
+    89597 Munderkingen
+    Rechnung
+    Rechnungs-Nr. 400123
+    Kunden-Nr. 1276556
+    Rechnungsdatum 14.07.2026
+    Abrechnung
+    Netto 30.65 EUR
+    MwSt. 2.15 EUR
+    Gesamtbetrag 32.80 EUR
+    zahlbar sofort ohne Abzug
+  `;
+  const result = analyzeGermanDocumentText(rosenhofText);
+
+  assert.equal(result.fields.documentType?.value, 'Rechnung');
+  assert.equal(result.fields.category?.value, 'Finanzen');
+  assert.notEqual(result.fields.documentType?.value, 'Lohnabrechnung / Gehaltsabrechnung');
+  assert.equal(result.fields.sender?.value, 'Rosenhof Schultheis e.K.');
+  assert.equal(result.fields.person?.value, 'Katalin Hemperger');
+  assert.equal(result.fields.invoiceNumber?.value, '400123');
+  assert.equal(result.fields.customerNumber?.value, '1276556');
+  assert.equal(result.fields.documentDate?.value, '14.07.2026');
+  assert.equal(result.fields.amount?.value, '32.80 EUR');
+  assert.match(result.text, /Netto 30\.65 EUR/);
+  assert.match(result.text, /MwSt\. 2\.15 EUR/);
+  assert.match(result.text, /zahlbar sofort ohne Abzug/);
+});
+
+test('does not classify incidental Netto and Abrechnung as payroll evidence', () => {
+  const result = analyzeGermanDocumentText(`
+    Abrechnung
+    Netto 30.65 EUR
+    MwSt. 2.15 EUR
+  `);
+
+  assert.equal(result.fields.documentType, undefined);
+  assert.ok(result.unresolvedFields.includes('documentType'));
 });
 
 test('classifies school documents and extracts their own reference', () => {

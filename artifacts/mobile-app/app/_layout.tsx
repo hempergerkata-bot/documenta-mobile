@@ -12,7 +12,7 @@ import {
   Inter_700Bold,
   useFonts,
 } from '@expo-google-fonts/inter';
-import { router, Stack } from 'expo-router';
+import { router, Stack, usePathname } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Notifications from 'expo-notifications';
 import { setBaseUrl } from '@workspace/api-client-react';
@@ -32,12 +32,13 @@ const queryClient = new QueryClient();
 function RootLayoutNav() {
   const { hydrated, onboarding } = useApp();
   const { t, direction } = useTranslation();
+  const pathname = usePathname();
   useEffect(() => {
     I18nManager.allowRTL(true);
   }, []);
   useEffect(() => {
-    if (hydrated && !onboarding.completed) router.replace('/onboarding');
-  }, [hydrated, onboarding.completed]);
+    if (hydrated && !onboarding.completed && pathname !== '/install') router.replace('/onboarding');
+  }, [hydrated, onboarding.completed, pathname]);
   useEffect(() => {
     const openTarget = (target: unknown) => {
       if (typeof target === 'string' && (target === '/notifications' || /^\/(document|action)\/[a-zA-Z0-9._-]+$/.test(target))) router.push(target as never);
@@ -73,6 +74,7 @@ function RootLayoutNav() {
       <Stack.Screen name="workspaces" options={{ headerShown: false }} />
       <Stack.Screen name="compare" options={{ headerShown: false }} />
       <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+      <Stack.Screen name="install" options={{ headerShown: false }} />
     </Stack>
     </View>
   );
