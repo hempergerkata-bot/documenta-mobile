@@ -11,6 +11,7 @@ import { useApp } from '@/context/AppContext';
 import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/hooks/useTranslation';
 import { scanDocumentPages } from '@/utils/documentScanner';
+import { cloudIntelligenceFromCanonical, loadCloudConsent, processMultimodalDocument } from '@/utils/documentaCloud';
 
 function pickWebPdf(): Promise<{ uri: string; name: string; mimeType: string } | null> {
   return new Promise((resolve) => {
@@ -51,6 +52,38 @@ export default function AddDocumentScreen() {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setPendingAsset({ ...asset, source });
     router.push('/document-details');
+  };
+
+  /** PDFs use the identical current-bytes Flash route before review. */
+  const openPdfDetails = async (asset: { uri: string; name: string; mimeType?: string }) => {
+    setScanning(true);
+    try {
+      const optedIn = await loadCloudConsent();
+      if (!optedIn) {
+        openDetails({ ...asset, mimeType: 'application/pdf' }, 'file');
+        return;
+      }
+      const canonical = await processMultimodalDocument([asset.uri], asset.name);
+      setPendingAsset({
+        ...asset, mimeType: 'application/pdf', source: 'file', pageUris: [asset.uri], documentId: canonical.documentId,
+        ocrStatus: 'complete',
+        cloudIntelligence: cloudIntelligenceFromCanonical(canonical),
+        cloudState: 'cloud',
+        cloudPipeline: {
+          optedIn: true, localOcr: { state: 'empty', textAvailable: false },
+          documentAiOcr: { state: 'skipped' }, gemini: { state: 'succeeded' },
+          fallbackUsed: false, failures: [], finalProvider: 'cloud_processing', cloudState: 'cloud',
+        },
+      });
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      router.push('/document-details');
+    } catch {
+      // The selected asset remains reviewable; no partial/local result replaces
+      // a successful canonical result because none was received.
+      openDetails({ ...asset, mimeType: 'application/pdf' }, 'file');
+    } finally {
+      setScanning(false);
+    }
   };
 
   const handleCamera = async () => {
@@ -113,7 +146,7 @@ export default function AddDocumentScreen() {
   const handleFile = async () => {
     if (Platform.OS === 'web') {
       const selected = await pickWebPdf();
-      if (selected) openDetails(selected, 'file');
+      if (selected) await openPdfDetails(selected);
       return;
     }
     const result = await DocumentPicker.getDocumentAsync({
@@ -123,7 +156,7 @@ export default function AddDocumentScreen() {
     });
     if (!result.canceled) {
       const selected = result.assets[0];
-      openDetails({ uri: selected.uri, name: selected.name, mimeType: selected.mimeType }, 'file');
+      await openPdfDetails({ uri: selected.uri, name: selected.name, mimeType: selected.mimeType });
     }
   };
 

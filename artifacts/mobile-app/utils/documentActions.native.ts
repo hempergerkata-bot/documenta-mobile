@@ -1,5 +1,7 @@
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
+import { Platform } from 'react-native';
 
 function assertPdfUri(uri?: string) {
   if (!uri) throw new Error('Für dieses Dokument ist keine PDF-Datei verfügbar.');
@@ -20,6 +22,18 @@ export async function shareDocumentPdf(uri?: string) {
 
 export async function exportDocumentPdf(uri?: string) {
   const pdfUri = assertPdfUri(uri);
+  if (Platform.OS === 'android') {
+    const permission = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+    if (!permission.granted) throw new Error('A mentési mappa kiválasztása megszakadt.');
+    const destination = await FileSystem.StorageAccessFramework.createFileAsync(
+      permission.directoryUri,
+      `Documenta-${Date.now()}.pdf`,
+      'application/pdf',
+    );
+    const base64 = await FileSystem.readAsStringAsync(pdfUri, { encoding: FileSystem.EncodingType.Base64 });
+    await FileSystem.writeAsStringAsync(destination, base64, { encoding: FileSystem.EncodingType.Base64 });
+    return;
+  }
   if (!(await Sharing.isAvailableAsync())) {
     throw new Error('PDF-Export ist auf diesem Gerät nicht verfügbar.');
   }

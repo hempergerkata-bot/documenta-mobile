@@ -15,6 +15,6 @@ export function hasUnsupportedCloudMime(value: unknown) {
   return Array.isArray(value) && value.some((item) => {
     if (!item || typeof item !== "object") return false;
     const mime = (item as Record<string, unknown>).mimeType;
-    return typeof mime === "string" && !["image/jpeg", "image/png"].includes(mime);
+    return typeof mime === "string" && !["image/jpeg", "image/png", "application/pdf"].includes(mime);
   });
 }

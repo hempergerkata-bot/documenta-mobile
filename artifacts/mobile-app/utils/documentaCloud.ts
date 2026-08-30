@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import { Buffer } from 'buffer';
 import { File } from 'expo-file-system';
+import { primaryCanonicalAmount } from './canonicalDocument';
 export type { CloudEvidence, CloudFact, CloudIntelligence, CloudOcrPage, CloudOcrResult, CloudPipelineFailure, CloudPipelineFailureReason, CloudPipelineStageState, ScanCloudPipelineResult, ScanCloudPipelineState } from './documentaCloudMapping';
 import { mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline as runPipeline, type CloudIntelligence, type CloudOcrResult } from './documentaCloudMapping';
 export { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudReviewValues, mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline } from './documentaCloudMapping';
@@ -12,7 +13,8 @@ export { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudReviewValues, mer
 const INSTALLATION_KEY = 'documenta.cloud-installation-id';
 const SESSION_KEY = 'documenta.cloud-session';
 const CONSENT_KEY = '@documenta/cloud-consent-v1';
-const REQUEST_TIMEOUT_MS = 45_000;
+/** Flash document understanding routinely takes several seconds for PDFs. */
+export const CLOUD_PROCESSING_DEADLINE_MS = 45_000;
 const normalizeApiOrigin = (value: string | undefined) => {
   const candidate = value?.trim();
   if (!candidate) throw new DocumentaCloudError('unavailable', 'Cloud API origin is not configured in this build.');
@@ -25,7 +27,7 @@ const normalizeApiOrigin = (value: string | undefined) => {
   return parsed.origin;
 };
 export const documentaApiOrigin = () => normalizeApiOrigin(process.env.EXPO_PUBLIC_API_ORIGIN || process.env.EXPO_PUBLIC_DOMAIN);
-const timedFetch = (url: string, init?: RequestInit) => fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+const timedFetch = (url: string, init?: RequestInit) => fetch(url, { ...init, signal: AbortSignal.timeout(CLOUD_PROCESSING_DEADLINE_MS) });
 
 export type CloudState = 'offline' | 'cloud' | 'unavailable' | 'quota';
 type StoredSession = { accessToken: string; expiresAt: string };
@@ -151,6 +153,91 @@ export async function processCloudIntelligence(ocrText: string, title: string): 
     ...(typeof intelligence.model === 'string' ? { model: intelligence.model } : {}),
     ...(fields ? { fields } : {}),
   };
+}
+
+export type CanonicalCloudDocument = {
+  documentId?: string;
+  title: string | null; sender: string | null; recipient: string | null; family: string;
+  category: string | null; subcategory: string | null; type: string | null; documentDate: string | null;
+  dueDates: Array<{ value: string; label: string | null }>;
+  amounts: Array<{ literal: string; normalized: string | null; currency: string | null; role: string | null }>;
+  references: Array<{ label: string | null; value: string }>; iban: string | null;
+  mainContent: string | null; summary: string | null; actions: string[]; risks: string[]; rights: string[];
+  confidence: number; reviewStatus: 'ready' | 'needs_review'; provider: 'gemini_flash' | 'gemini_pro';
+  model: string; provenance: { reason: string; qualityGate: string[] };
+  evidence: Array<{ field: string; text: string; pageIndex: number }>;
+  sourcePages: Array<{ pageIndex: number; text: string }>;
+};
+
+async function uriBytes(uri: string): Promise<{ contentBase64: string; mimeType: 'image/jpeg' | 'image/png' | 'application/pdf' }> {
+  if (Platform.OS === 'web') {
+    const response = await fetch(uri);
+    if (!response.ok) throw new DocumentaCloudError('unavailable', 'Selected document could not be read.');
+    const blob = await response.blob();
+    const mimeType = blob.type === 'application/pdf' ? 'application/pdf' : blob.type === 'image/png' ? 'image/png' : 'image/jpeg';
+    return { mimeType, contentBase64: Buffer.from(await blob.arrayBuffer()).toString('base64') };
+  }
+  const lower = uri.toLowerCase();
+  return { mimeType: lower.includes('.pdf') ? 'application/pdf' : lower.includes('.png') ? 'image/png' : 'image/jpeg', contentBase64: Buffer.from(await new File(uri).bytes()).toString('base64') };
+}
+
+/** The sole mobile production cloud call: current PDF/image bytes -> canonical Gemini record. */
+export async function processMultimodalDocument(pageUris: string[], title: string): Promise<CanonicalCloudDocument> {
+  if (!pageUris.length) throw new DocumentaCloudError('unavailable', 'A document file is required.');
+  const token = await sessionToken();
+  let response: Response;
+  try {
+    response = await timedFetch(`${documentaApiOrigin()}/api/documenta/documents/multimodal`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ title, cloudOptIn: true, pages: await Promise.all(pageUris.map(uriBytes)) }),
+    });
+  } catch { throw new DocumentaCloudError('unavailable', 'Cloud service is unavailable.'); }
+  const body = await response.json().catch(() => ({})) as { error?: string; message?: string; documentId?: unknown; canonical?: CanonicalCloudDocument };
+  if (!response.ok) throw new DocumentaCloudError(response.status === 429 || body.error === 'quota_exceeded' ? 'quota' : 'unavailable', body.message || 'Cloud processing is unavailable.');
+  const canonical = body.canonical;
+  if (!canonical || typeof body.documentId !== 'string' || typeof canonical.family !== 'string' || typeof canonical.confidence !== 'number' || !Array.isArray(canonical.evidence) || !Array.isArray(canonical.sourcePages)) throw new DocumentaCloudError('unavailable', 'Cloud response could not be safely read.');
+  return { ...canonical, documentId: body.documentId };
+}
+
+/** Compatibility view for existing review persistence; `canonical` remains source of truth. */
+export function cloudIntelligenceFromCanonical(canonical: CanonicalCloudDocument): CloudIntelligence {
+  const sourceText = canonical.sourcePages.sort((a, b) => a.pageIndex - b.pageIndex).map((item) => item.text).join('\n');
+  const primaryAmount = primaryCanonicalAmount(canonical.amounts);
+  const fields = Object.fromEntries([
+    ['title', canonical.title], ['sender', canonical.sender], ['recipient', canonical.recipient],
+    ['documentDate', canonical.documentDate], ['iban', canonical.iban],
+    ['amount', primaryAmount?.literal], ['dueDate', canonical.dueDates[0]?.value],
+    ['referenceNumber', canonical.references[0]?.value],
+  ].flatMap(([field, value]) => typeof value === 'string' ? [[field, {
+    value, confidence: canonical.confidence,
+    validationState: canonical.reviewStatus === 'ready' ? 'VALIDATED' : 'PARTIALLY_VALIDATED',
+    evidence: canonical.evidence.filter((item) => item.field === field).map((item) => ({ text: item.text, start: 0, end: item.text.length, pageIndex: item.pageIndex })),
+  }]] : []));
+  return { family: canonical.family, type: canonical.type ?? 'unknown/novel', summary: canonical.summary ?? undefined, confidence: canonical.confidence, validationState: canonical.reviewStatus === 'ready' ? 'VALIDATED' : 'PARTIALLY_VALIDATED', model: canonical.model, fields, sourceText, canonical };
+}
+
+export async function saveCanonicalReview(documentId: string, canonical: Record<string, unknown>): Promise<CanonicalCloudDocument> {
+  const token = await sessionToken();
+  let response: Response;
+  try {
+    response = await timedFetch(`${documentaApiOrigin()}/api/documenta/documents/${encodeURIComponent(documentId)}/review`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ canonical }),
+    });
+  } catch { throw new DocumentaCloudError('unavailable', 'Canonical review could not be saved to cloud.'); }
+  const body = await response.json().catch(() => ({})) as { message?: string; canonical?: CanonicalCloudDocument };
+  if (!response.ok || !body.canonical) {
+    throw new DocumentaCloudError('unavailable', body.message || 'Canonical review could not be saved to cloud.');
+  }
+  return { ...body.canonical, documentId };
+}
+
+export async function loadCanonicalDocument(documentId: string): Promise<CanonicalCloudDocument> {
+  const token = await sessionToken();
+  const response = await timedFetch(`${documentaApiOrigin()}/api/documenta/documents/${encodeURIComponent(documentId)}/canonical`, { headers: { Authorization: `Bearer ${token}` } });
+  const body = await response.json().catch(() => ({})) as { message?: string; canonical?: CanonicalCloudDocument };
+  if (!response.ok || !body.canonical) throw new DocumentaCloudError('unavailable', body.message || 'Canonical document could not be refreshed.');
+  return { ...body.canonical, documentId };
 }
 
 export function cloudFailureState(error: unknown): CloudState {

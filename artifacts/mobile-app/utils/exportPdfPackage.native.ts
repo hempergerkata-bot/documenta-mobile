@@ -1,6 +1,8 @@
 import { Directory, File, Paths } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { PDFDocument, StandardFonts } from 'pdf-lib/cjs/index.js';
+import { Platform } from 'react-native';
 import { createExportPagePlan, standardFontLabel, TOC_ROWS_PER_PAGE, tocTitleForStandardFont } from './exportPdfPackageCore';
 import type { ExportPdfPackageErrorCode, ExportPdfPackageOptions, ExportPdfPackageResult } from './exportPdfPackage';
 
@@ -20,7 +22,7 @@ function safeFilename(value?: string) {
 
 export async function exportPdfPackage(options: ExportPdfPackageOptions): Promise<ExportPdfPackageResult> {
   if (!options.documents.length) fail('NO_DOCUMENTS');
-  if (!(await Sharing.isAvailableAsync())) fail('SHARING_UNAVAILABLE');
+  if (Platform.OS !== 'android' && !(await Sharing.isAvailableAsync())) fail('SHARING_UNAVAILABLE');
 
   const sources: PDFDocument[] = [];
   for (const document of options.documents) {
@@ -63,12 +65,24 @@ export async function exportPdfPackage(options: ExportPdfPackageOptions): Promis
   }
 
   try {
-    const directory = new Directory(Paths.cache, 'documenta', 'exports');
+    const directory = new Directory(Paths.document, 'documenta', 'exports');
     directory.create({ intermediates: true, idempotent: true });
     const destination = new File(directory, `${Date.now()}-${safeFilename(options.filename)}`);
     if (destination.exists) destination.delete();
     destination.write(await pdf.save());
     if (!destination.exists) fail('FILE_WRITE_FAILED');
+    if (Platform.OS === 'android') {
+      const permission = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!permission.granted) fail('FILE_WRITE_FAILED');
+      const exportedUri = await FileSystem.StorageAccessFramework.createFileAsync(
+        permission.directoryUri,
+        safeFilename(options.filename),
+        'application/pdf',
+      );
+      const base64 = await FileSystem.readAsStringAsync(destination.uri, { encoding: FileSystem.EncodingType.Base64 });
+      await FileSystem.writeAsStringAsync(exportedUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+      return { filename: safeFilename(options.filename), uri: exportedUri };
+    }
     await Sharing.shareAsync(destination.uri, { dialogTitle: options.labels.shareDialogTitle, mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
     return { filename: safeFilename(options.filename), uri: destination.uri };
   } catch (error) {

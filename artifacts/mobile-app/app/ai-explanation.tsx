@@ -24,7 +24,19 @@ export default function ExplanationScreen() {
   const [voiceState, setVoiceState] = useState<VoiceState>('idle'); const [voiceError, setVoiceError] = useState(false);
   const [voices, setVoices] = useState<LocalVoice[]>([]);
   const document = documents.find((item) => item.id === id);
-  const intelligence = document?.intelligence ?? (document?.ocrText ? analyzeDocumentIntelligence({ text: document.ocrText, structuredFields: { ...document.structuredFields, sender: document.sender, documentDate: document.documentDate, dueDate: document.dueDate, amount: document.amount, status: document.status } }) : undefined);
+  const intelligence = document
+    ? document.intelligence ?? analyzeDocumentIntelligence({
+        text: document.ocrText ?? '',
+        structuredFields: {
+          ...document.structuredFields,
+          sender: document.sender,
+          documentDate: document.documentDate,
+          dueDate: document.dueDate,
+          amount: document.amount,
+          status: document.status,
+        },
+      })
+    : undefined;
   const explanationLanguage = isExplanationAdapterLanguage(settings.explanationLanguage) ? settings.explanationLanguage as ExplanationLanguage : undefined;
   const sourceLanguage = intelligence?.documentLanguage.value === 'unknown' ? undefined : intelligence?.documentLanguage.value;
   const translation = deriveTranslationState(sourceLanguage, settings.explanationLanguage, settings.translationMode);
@@ -59,12 +71,16 @@ export default function ExplanationScreen() {
     if (!intelligence || !explanationLanguage) {
       addConversationExchange(document.id, question.trim(), t('explanation.unsupportedQuestion')); setLastTrace([]); setQuestion(''); return;
     }
-    const confirmed = (field: string) => ['accept', 'edit'].includes(document.intelligenceReviewDecisions?.[field] ?? '');
     const corrected = {
-      sender: confirmed('sender') ? document.sender : undefined,
-      documentDate: confirmed('documentDate') ? document.documentDate : undefined,
-      amount: confirmed('mainAmount') ? document.amount : undefined,
-      deadline: confirmed('deadlines') ? document.dueDate : undefined,
+      sender: document.sender,
+      recipient: document.structuredFields?.recipient,
+      documentDate: document.documentDate,
+      amount: document.amount,
+      deadline: document.dueDate,
+      paymentTerms: document.structuredFields?.paymentTerms,
+      referenceNumber: document.structuredFields?.referenceNumber
+        ?? document.structuredFields?.invoiceNumber
+        ?? document.structuredFields?.customerNumber,
     };
     const response = answerDocumentQuestion(intelligence, question.trim(), explanationLanguage, corrected);
     const safeText = response.supported ? `${response.text}${response.safetyNotice ? `\n${response.safetyNotice}` : ''}` : t('explanation.unsupportedQuestion');

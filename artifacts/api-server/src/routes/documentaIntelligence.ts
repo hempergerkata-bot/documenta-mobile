@@ -2,6 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { db, documentaAuditEvents, documentaBatchJobs, documentaBatchPages, documentaCorrections, documentaDocuments, documentaEvidence, documentaIntelligence, documentaPages, documentaProviderUsage, documentaRelations, documentaSessionIssuance, documentaValidationRecords } from "@workspace/db";
 import { Router, type IRouter, type RequestHandler } from "express";
+import { PDFDocument } from "pdf-lib";
 import { mapFieldsToPages, OCR_PAGE_SEPARATOR, parseGeminiFields, type ParsedField } from "../lib/documentaFields";
 import { extractInvoiceEssentials, mergeEvidenceFields } from "../lib/documentaInvoiceFields";
 import { hasUnsupportedCloudMime, normalizeDocumentAiError } from "../lib/documentaProviderErrors";
@@ -10,6 +11,7 @@ const router: IRouter = Router();
 const MAX_TEXT_BYTES = 256 * 1024;
 const MAX_CLOUD_PAGE_BYTES = 4 * 1024 * 1024;
 const MAX_CLOUD_PAGES_PER_REQUEST = 5;
+const MAX_MULTIMODAL_TOTAL_BYTES = 12 * 1024 * 1024;
 const MAX_PAGES_PER_BATCH = 50;
 const DOCUMENT_AI_EUR_PER_PAGE_ESTIMATE = 0.015;
 const GEMINI_FLASH_EUR_PER_1K_TOKENS_ESTIMATE = 0.0001;
@@ -145,14 +147,14 @@ function evidenceForText(input: string) {
   for (const match of input.matchAll(/\b\d{1,3}(?:[ ,.]\d{3})*(?:[,.]\d{2})\s?(?:EUR|USD|HUF|Ft|€)\b/gi)) values.push({ field: "amount", value: match[0], startOffset: match.index, endOffset: match.index + match[0].length, state: "PARTIALLY_VALIDATED", rule: "currency_amount_format" });
   return values;
 }
-type CloudPage = { contentBase64: string; mimeType: "image/jpeg" | "image/png" };
+type CloudPage = { contentBase64: string; mimeType: "image/jpeg" | "image/png" | "application/pdf" };
 function readCloudPages(value: unknown): CloudPage[] | undefined {
   if (!Array.isArray(value) || value.length < 1 || value.length > MAX_CLOUD_PAGES_PER_REQUEST) return undefined;
   const result: CloudPage[] = [];
   for (const item of value) {
     const page = asObject(item); const contentBase64 = typeof page?.contentBase64 === "string" ? page.contentBase64 : "";
     const mimeType = page?.mimeType;
-    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(contentBase64) || !["image/jpeg", "image/png"].includes(String(mimeType))) return undefined;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(contentBase64) || !["image/jpeg", "image/png", "application/pdf"].includes(String(mimeType))) return undefined;
     const content = Buffer.from(contentBase64, "base64");
     if (!content.length || content.length > MAX_CLOUD_PAGE_BYTES || content.toString("base64") !== contentBase64) return undefined;
     result.push({ contentBase64, mimeType: mimeType as CloudPage["mimeType"] });
@@ -261,6 +263,202 @@ async function callGemini(userId: string, operationId: string, ocrText: string, 
   throw lastError;
 }
 
+type CanonicalDocument = {
+  title: string | null; sender: string | null; recipient: string | null;
+  family: Family; category: string | null; subcategory: string | null; type: string | null;
+  documentDate: string | null; dueDates: Array<{ value: string; label: string | null }>;
+  amounts: Array<{ literal: string; normalized: string | null; currency: string | null; role: string | null }>;
+  references: Array<{ label: string | null; value: string }>; iban: string | null;
+  mainContent: string | null; summary: string | null; actions: string[]; risks: string[];
+  rights: string[]; confidence: number; reviewStatus: "ready" | "needs_review";
+  provider: "gemini_flash" | "gemini_pro"; model: string;
+  provenance: { reason: "flash_primary" | "flash_quality_gate"; qualityGate: string[] };
+  evidence: Array<{ field: string; text: string; pageIndex: number }>;
+  sourcePages: Array<{ pageIndex: number; text: string }>;
+};
+
+export async function multimodalPageCount(pages: CloudPage[]) {
+  let count = pages.filter(page => page.mimeType !== "application/pdf").length;
+  for (const page of pages) if (page.mimeType === "application/pdf") {
+    count += (await PDFDocument.load(Buffer.from(page.contentBase64, "base64"), { updateMetadata: false })).getPageCount();
+  }
+  return count;
+}
+
+const nullableString = (value: unknown, maximum = 4000) => typeof value === "string" && value.trim() && value.length <= maximum ? value.trim() : null;
+const stringList = (value: unknown, maximum = 20) => Array.isArray(value) ? value.flatMap(item => {
+  const result = nullableString(item, 2000); return result ? [result] : [];
+}).slice(0, maximum) : [];
+
+const evidenceField = (value: unknown) => typeof value === "string" ? value.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+const literalComparable = (value: unknown) => typeof value === "string"
+  ? value.toLocaleLowerCase()
+    .replace(/[\u2212\uFE63\uFF0D]/g, "-")
+    .replace(/[\uFE62\uFF0B]/g, "+")
+    .trim().replace(/\s+/g, " ")
+  : "";
+function containsGroundedLiteral(quoteValue: unknown, factValue: unknown) {
+  const baseQuote = literalComparable(quoteValue);
+  const baseExpected = literalComparable(factValue);
+  if (!baseQuote || !baseExpected) return false;
+  const variants: Array<[string, string]> = [[baseQuote, baseExpected]];
+  if (/\s/.test(baseQuote) || /\s/.test(baseExpected)) variants.push([baseQuote.replace(/\s+/g, ""), baseExpected.replace(/\s+/g, "")]);
+  for (const [quote, expected] of variants) {
+    const numeric = /\d/.test(expected);
+    for (let start = quote.indexOf(expected); start >= 0; start = quote.indexOf(expected, start + 1)) {
+      if (!numeric) return true;
+      const before = quote[start - 1];
+      const beforeBefore = quote[start - 2];
+      const after = quote[start + expected.length];
+      const afterAfter = quote[start + expected.length + 1];
+      // Numeric and identifier facts require token boundaries. A grouping or
+      // decimal separator adjacent to another digit remains part of that larger
+      // number, so "125" cannot match "1,125" (nor the reverse by suffix).
+      const unsignedNumericStart = /^\d/.test(expected);
+      const embeddedBefore = !!before && (
+        /[a-z0-9]/i.test(before) ||
+        (/[.,'’]/.test(before) && /\d/.test(beforeBefore ?? "")) ||
+        (unsignedNumericStart && /[+-]/.test(before))
+      );
+      const embeddedAfter = !!after && (/[a-z0-9]/i.test(after) || (/[.,'’]/.test(after) && /\d/.test(afterAfter ?? "")));
+      if (!embeddedBefore && !embeddedAfter) return true;
+    }
+  }
+  return false;
+}
+function evidenceSupports(evidence: unknown[], aliases: string[], value: unknown) {
+  const expected = literalComparable(value);
+  if (!expected) return false;
+  const identities = aliases.map(evidenceField);
+  return evidence.some(raw => {
+    const item = asObject(raw);
+    return identities.includes(evidenceField(item?.field)) && containsGroundedLiteral(item?.text, value);
+  });
+}
+function factObjects(value: unknown) { return Array.isArray(value) ? value.map(asObject).filter((item): item is Record<string, unknown> => !!item) : []; }
+
+/** Whether this exact evidence row supports one corresponding high-impact fact. */
+export function evidenceSupportsCanonicalFact(rawEvidence: unknown, canonical: unknown) {
+  const evidence = asObject(rawEvidence); const item = asObject(canonical);
+  if (!evidence || !item) return false;
+  const one = [evidence];
+  const identity = evidenceField(evidence.field);
+  if (["amount", "amounts", "totalamount", "netamount", "grossamount"].includes(identity)) return factObjects(item.amounts).some(amount => evidenceSupports(one, [String(evidence.field)], amount.literal));
+  if (["reference", "references", "referencenumber", "invoicenumber", "customernumber", "contractnumber"].includes(identity)) return factObjects(item.references).some(reference => evidenceSupports(one, [String(evidence.field)], reference.value));
+  if (["documentdate", "date"].includes(identity)) return evidenceSupports(one, [String(evidence.field)], item.documentDate);
+  if (["duedate", "deadline"].includes(identity)) return factObjects(item.dueDates).some(due => evidenceSupports(one, [String(evidence.field)], due.value));
+  if (identity === "iban") return evidenceSupports(one, ["iban"], item.iban);
+  if (identity === "sender") return evidenceSupports(one, ["sender"], item.sender);
+  if (["recipient", "affectedperson", "person"].includes(identity)) return evidenceSupports(one, [String(evidence.field)], item.recipient);
+  if (["action", "actions", "nextstep"].includes(identity)) return stringList(item.actions).some(action => evidenceSupports(one, [String(evidence.field)], action));
+  return false;
+}
+
+/** Rejects structurally unusable model output before considering the rare Pro retry. */
+export function canonicalQualityGate(value: unknown, expectedPageCount = 1): string[] {
+  const item = asObject(value); if (!item) return ["not_an_object"];
+  const missing: string[] = [];
+  if (!nullableString(item.title, 255)) missing.push("title");
+  if (!DOCUMENT_FAMILIES.includes(item.family as (typeof DOCUMENT_FAMILIES)[number])) missing.push("family");
+  if (typeof item.confidence !== "number" || item.confidence < 0 || item.confidence > 1) missing.push("confidence");
+  const pages = Array.isArray(item.sourcePages) ? item.sourcePages : [];
+  const evidence = Array.isArray(item.evidence) ? item.evidence : [];
+  const indexes = pages.map(raw => asObject(raw)?.pageIndex);
+  const expectedIndexes = Array.from({ length: expectedPageCount }, (_, index) => index);
+  if (pages.length !== expectedPageCount || new Set(indexes).size !== indexes.length ||
+      !indexes.every(index => typeof index === "number" && Number.isInteger(index) && index >= 0 && index < expectedPageCount) ||
+      expectedIndexes.some(index => !indexes.includes(index)) ||
+      !pages.every(raw => !!nullableString(asObject(raw)?.text))) missing.push("source_pages");
+  if (!evidence.length || !evidence.every(raw => { const span = asObject(raw); const page = pages.find(candidate => asObject(candidate)?.pageIndex === span?.pageIndex); return !!nullableString(span?.field, 100) && !!nullableString(span?.text) && !!page && nullableString(asObject(page)?.text)!.includes(nullableString(span?.text)!); })) missing.push("page_scoped_evidence");
+  const requireEach = (name: string, values: unknown[], aliases: string[]) => {
+    if (values.some(value => !evidenceSupports(evidence, aliases, value))) missing.push(`${name}_evidence`);
+  };
+  requireEach("amount", factObjects(item.amounts).map(amount => amount.literal), ["amount", "amounts", "total_amount", "net_amount", "gross_amount"]);
+  requireEach("reference", factObjects(item.references).map(reference => reference.value), ["reference", "references", "reference_number", "invoice_number", "customer_number", "contract_number"]);
+  requireEach("document_date", nullableString(item.documentDate) ? [item.documentDate] : [], ["document_date", "date"]);
+  requireEach("due_date", factObjects(item.dueDates).map(due => due.value), ["due_date", "deadline"]);
+  requireEach("iban", nullableString(item.iban) ? [item.iban] : [], ["iban"]);
+  requireEach("sender", nullableString(item.sender) ? [item.sender] : [], ["sender"]);
+  requireEach("recipient", nullableString(item.recipient) ? [item.recipient] : [], ["recipient", "affected_person", "person"]);
+  requireEach("action", stringList(item.actions), ["action", "actions", "next_step"]);
+  if (!nullableString(item.mainContent) && !nullableString(item.summary) && !Array.isArray(item.amounts) && !Array.isArray(item.references)) missing.push("material_content");
+  return missing;
+}
+
+function canonicalFromModel(value: unknown, provider: "gemini_flash" | "gemini_pro", model: string, gate: string[], expectedPageCount: number): CanonicalDocument | undefined {
+  const item = asObject(value); if (!item || canonicalQualityGate(item, expectedPageCount).length) return undefined;
+  const evidence = Array.isArray(item.evidence) ? item.evidence.flatMap((raw) => {
+    const span = asObject(raw); const field = nullableString(span?.field, 100); const literal = nullableString(span?.text); const pageIndex = span?.pageIndex;
+    return field && literal && typeof pageIndex === "number" && Number.isInteger(pageIndex) && pageIndex >= 0 ? [{ field, text: literal, pageIndex }] : [];
+  }) : [];
+  const sourcePages = Array.isArray(item.sourcePages) ? item.sourcePages.flatMap(raw => {
+    const page = asObject(raw); const pageIndex = page?.pageIndex; const pageText = nullableString(page?.text);
+    return typeof pageIndex === "number" && Number.isInteger(pageIndex) && pageIndex >= 0 && pageText ? [{ pageIndex, text: pageText }] : [];
+  }) : [];
+  const amounts = Array.isArray(item.amounts) ? item.amounts.flatMap(raw => {
+    const amount = asObject(raw); const literal = nullableString(amount?.literal, 100);
+    return literal ? [{ literal, normalized: nullableString(amount?.normalized, 100), currency: nullableString(amount?.currency, 12), role: nullableString(amount?.role, 100) }] : [];
+  }) : [];
+  const references = Array.isArray(item.references) ? item.references.flatMap(raw => {
+    const reference = asObject(raw); const referenceValue = nullableString(reference?.value, 255);
+    return referenceValue ? [{ label: nullableString(reference?.label, 100), value: referenceValue }] : [];
+  }) : [];
+  const dueDates = Array.isArray(item.dueDates) ? item.dueDates.flatMap(raw => {
+    const due = asObject(raw); const dueValue = nullableString(due?.value, 100);
+    return dueValue ? [{ value: dueValue, label: nullableString(due?.label, 100) }] : [];
+  }) : [];
+  return {
+    title: nullableString(item.title, 255), sender: nullableString(item.sender, 255), recipient: nullableString(item.recipient, 255),
+    family: item.family as Family, category: nullableString(item.category, 100), subcategory: nullableString(item.subcategory, 100), type: nullableString(item.type, 100),
+    documentDate: nullableString(item.documentDate, 100), dueDates, amounts, references,
+    iban: nullableString(item.iban, 64), mainContent: nullableString(item.mainContent), summary: nullableString(item.summary),
+    actions: stringList(item.actions), risks: stringList(item.risks), rights: stringList(item.rights),
+    confidence: item.confidence as number, reviewStatus: item.reviewStatus === "ready" ? "ready" : "needs_review",
+    provider, model, provenance: { reason: provider === "gemini_flash" ? "flash_primary" : "flash_quality_gate", qualityGate: gate }, evidence, sourcePages,
+  };
+}
+
+async function callGeminiMultimodal(userId: string, operationId: string, pages: CloudPage[], usePro: boolean) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!geminiConfigured() || !apiKey) throw new Error("gemini_not_configured");
+  const model = usePro ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview";
+  const prompt = `Extract the supplied document into JSON only. Unknown values MUST be null or [] and must never be guessed. Return exactly: {"title":string|null,"sender":string|null,"recipient":string|null,"family":string,"category":string|null,"subcategory":string|null,"type":string|null,"documentDate":string|null,"dueDates":[{"value":string,"label":string|null}],"amounts":[{"literal":string,"normalized":string|null,"currency":string|null,"role":string|null}],"references":[{"label":string|null,"value":string}],"iban":string|null,"mainContent":string|null,"summary":string|null,"actions":[string],"risks":[string],"rights":[string],"confidence":number,"reviewStatus":"ready"|"needs_review","sourcePages":[{"pageIndex":number,"text":string}],"evidence":[{"field":string,"text":string,"pageIndex":number}]}. family must be one of ${JSON.stringify(DOCUMENT_FAMILIES)}.
+
+Contract rules:
+- sourcePages must contain exactly one literal transcription for every supplied physical page, indexed from zero.
+- sender, recipient, documentDate, every dueDates.value, every amounts.literal, every references.value, and iban must preserve the literal value visible in sourcePages. Do not normalize these fields. amounts.normalized is the only normalized numeric representation.
+- currency may be populated only when that currency is explicitly visible in the same source passage as the amount; otherwise currency must be null.
+- Evidence is mandatory for every populated high-impact fact. Add one separate evidence object for sender, recipient, documentDate, iban, every due date, every amount, every reference, and every action.
+- Use these evidence field identities exactly: "sender", "recipient", "document_date", "iban", "due_date", "amount", "reference", and "action".
+- Each evidence.text must be a literal quote from the declared sourcePages page and must contain that exact fact value, including its sign and digits. One evidence object must not stand in for several different values.
+- Normalized values, inferred labels, summaries, categories, and document types must never be substituted for literal evidence.`;
+  const inputTokens = Math.ceil((prompt.length + pages.reduce((sum, page) => sum + page.contentBase64.length, 0)) / 4);
+  const usage = await reserveProvider(userId, usePro ? "gemini_pro" : "gemini_flash", model, operationId, pages.length, inputTokens);
+  if (!usage) throw new Error(usePro ? "pro_quota_unavailable" : "quota_exceeded");
+  try {
+    const { GoogleGenAI } = await (new Function("specifier", "return import(specifier)")("@google/genai") as Promise<any>);
+    const ai = new GoogleGenAI({ apiKey });
+    const result = await ai.models.generateContent({ model, contents: [{ role: "user", parts: [{ text: prompt }, ...pages.map(page => ({ inlineData: { mimeType: page.mimeType, data: page.contentBase64 } }))] }], config: { responseMimeType: "application/json", temperature: 0 } });
+    const raw = JSON.parse(result.text || "{}");
+    await settleProvider(usage.id, "SUCCEEDED", Math.ceil((result.text?.length ?? 0) / 4), (inputTokens + Math.ceil((result.text?.length ?? 0) / 4)) / 1000 * (usePro ? GEMINI_PRO_EUR_PER_1K_TOKENS_ESTIMATE : GEMINI_FLASH_EUR_PER_1K_TOKENS_ESTIMATE));
+    return { raw, model };
+  } catch (caught) { await settleProvider(usage.id, "FAILED_RELEASED"); throw caught; }
+}
+
+export async function selectCanonicalWithFallback(
+  expectedPageCount: number,
+  flashCall: () => Promise<{ raw: unknown; model: string }>,
+  proCall: () => Promise<{ raw: unknown; model: string }>,
+) {
+  const flash = await flashCall();
+  const flashGate = canonicalQualityGate(flash.raw, expectedPageCount);
+  const flashCanonical = canonicalFromModel(flash.raw, "gemini_flash", flash.model, flashGate, expectedPageCount);
+  if (flashCanonical) return flashCanonical;
+  const pro = await proCall();
+  const proGate = canonicalQualityGate(pro.raw, expectedPageCount);
+  return canonicalFromModel(pro.raw, "gemini_pro", pro.model, [...flashGate, ...proGate], expectedPageCount);
+}
+
 /** Anonymous bootstrap only: converts a random installation UUID to a pseudonymous subject. */
 router.post("/documenta/auth/session", async (request, response) => {
   const installationId = asObject(request.body)?.installationId;
@@ -324,14 +522,69 @@ router.get("/documenta/cloud-status", async (request, response) => {
   });
 });
 
+/**
+ * Production document ingestion path. It deliberately sends the selected
+ * document bytes straight to Gemini; Document AI and client OCR are not part
+ * of this route.
+ */
+router.post("/documenta/documents/multimodal", async (request, response) => {
+  const body = asObject(request.body);
+  const pages = body?.pages === undefined ? readCloudPages(body?.cloudPages) : readCloudPages(body.pages);
+  const requestedTitle = text(body?.title, 255);
+  if (body?.cloudOptIn !== true) return error(response, 400, "cloud_consent_required", "Cloud processing requires explicit consent.");
+  if (hasUnsupportedCloudMime(body?.pages ?? body?.cloudPages)) return error(response, 415, "unsupported_mime", "Only PDF, JPEG, and PNG document bytes are accepted.");
+  if (!pages || !requestedTitle) return error(response, 400, "invalid_request", `A document title and current document pages are required; each page must be at most ${MAX_CLOUD_PAGE_BYTES} bytes.`);
+  const decodedPages = pages.map(page => Buffer.from(page.contentBase64, "base64"));
+  if (decodedPages.reduce((total, page) => total + page.length, 0) > MAX_MULTIMODAL_TOTAL_BYTES) return error(response, 413, "payload_too_large", "Total inline document bytes exceed the multimodal limit.");
+  let expectedPageCount: number;
+  try {
+    expectedPageCount = await multimodalPageCount(pages);
+  } catch {
+    return error(response, 400, "invalid_pdf", "The supplied PDF could not be parsed.");
+  }
+  if (expectedPageCount > MAX_CLOUD_PAGES_PER_REQUEST) return error(response, 413, "too_many_pages", `Documents may contain at most ${MAX_CLOUD_PAGES_PER_REQUEST} pages.`);
+  if (!geminiConfigured()) return error(response, 503, "cloud_not_configured", "Gemini processing is not configured.");
+  const operationId = randomUUID();
+  try {
+    let canonical: CanonicalDocument | undefined;
+    try {
+      canonical = await selectCanonicalWithFallback(expectedPageCount,
+        () => callGeminiMultimodal(request.documentaUserId!, `${operationId}:flash`, pages, false),
+        () => callGeminiMultimodal(request.documentaUserId!, `${operationId}:pro`, pages, true));
+    } catch (caught) {
+      if (!(caught instanceof Error && caught.message === "pro_quota_unavailable")) throw caught;
+    }
+    if (!canonical) return error(response, 502, "canonical_validation_failed", "Cloud output was incomplete and could not be safely validated.");
+    const userId = request.documentaUserId!;
+    const [document] = await db.transaction(async tx => {
+      const [created] = await tx.insert(documentaDocuments).values({ userId, title: canonical.title ?? requestedTitle, source: "gemini_multimodal", cloudOptIn: true }).returning();
+      await tx.insert(documentaPages).values(canonical.sourcePages.map(page => ({ userId, documentId: created.id, pageNumber: page.pageIndex + 1, ocrText: page.text, ocrProvider: "gemini_multimodal", ocrState: "COMPLETE" })));
+      const [intelligence] = await tx.insert(documentaIntelligence).values({ userId, documentId: created.id, family: canonical.family, type: canonical.type ?? "unknown/novel", summary: canonical.summary, confidence: canonical.confidence, validationState: canonical.reviewStatus === "ready" ? "VALIDATED" : "PARTIALLY_VALIDATED", extraction: canonical, model: canonical.model }).returning();
+      if (canonical.evidence.length) await tx.insert(documentaEvidence).values(canonical.evidence.map(item => {
+        const pageText = canonical.sourcePages.find(page => page.pageIndex === item.pageIndex)?.text ?? "";
+        const startOffset = pageText.indexOf(item.text);
+        const exactlySupported = evidenceSupportsCanonicalFact(item, canonical);
+        return { userId, intelligenceId: intelligence.id, documentId: created.id, field: item.field, value: item.text, pageNumber: item.pageIndex + 1, startOffset: Math.max(0, startOffset), endOffset: Math.max(0, startOffset) + item.text.length, confidence: canonical.confidence, validationState: startOffset >= 0 && exactlySupported && canonical.reviewStatus === "ready" ? "VALIDATED" : "PARTIALLY_VALIDATED" };
+      }));
+      await tx.insert(documentaAuditEvents).values({ userId, documentId: created.id, eventType: "multimodal_processed", provider: canonical.provider, model: canonical.model, metadata: { provenance: canonical.provenance, pageCount: pages.length } });
+      return [created];
+    });
+    response.status(201).json({ documentId: document.id, canonical });
+  } catch (caught) {
+    const code = caught instanceof Error ? caught.message : "cloud_processing_failed";
+    return error(response, code === "quota_exceeded" ? 429 : code === "gemini_not_configured" ? 503 : 502, code === "quota_exceeded" ? "quota_exceeded" : code === "gemini_not_configured" ? "cloud_not_configured" : "cloud_processing_failed", code === "quota_exceeded" ? "Daily or monthly provider-call limit reached." : "Cloud document processing could not complete.");
+  }
+});
+
 router.post("/documenta/documents/process", async (request, response) => {
+  if (process.env.DOCUMENTA_ENABLE_LEGACY_OCR_PIPELINE !== "true") return error(response, 410, "legacy_pipeline_disabled", "This legacy OCR route is disabled; use /documenta/documents/multimodal.");
   const body = asObject(request.body); let ocrText = text(body?.ocrText, MAX_TEXT_BYTES); const title = text(body?.title, 255) ?? "Untitled document";
   const cloudOptIn = body?.cloudOptIn === true;
   const processOperationId = randomUUID();
   // Processing with cloud intelligence is an OCR-to-Gemini transaction: do
   // not bill Document AI when the required extraction provider is unavailable.
   if (cloudOptIn && !geminiConfigured()) return error(response, 503, "cloud_not_configured", "Cloud intelligence was requested but GEMINI_API_KEY is not configured.");
-  if (hasUnsupportedCloudMime(body?.cloudPages)) return error(response, 415, "unsupported_cloud_mime", "Cloud OCR supports JPEG and PNG images only.");
+  if (hasUnsupportedCloudMime(body?.cloudPages)) return error(response, 415, "unsupported_cloud_mime", "Cloud OCR supports JPEG, PNG, and PDF input only.");
   const cloudPages = cloudOptIn && body?.cloudPages !== undefined ? readCloudPages(body.cloudPages) : undefined;
   if ((!ocrText && !cloudPages) || (body?.cloudPages !== undefined && !cloudOptIn) || (body?.cloudPages !== undefined && !cloudPages)) return error(response, 400, "invalid_request", `ocrText or bounded cloudPages are required; cloud page content is limited to ${MAX_CLOUD_PAGE_BYTES} bytes.`);
   let ocrPageTexts: string[] = ocrText ? [ocrText] : [];
@@ -404,11 +657,12 @@ router.post("/documenta/documents/process", async (request, response) => {
 });
 
 router.post("/documenta/cloud-ocr", async (request, response) => {
+  if (process.env.DOCUMENTA_ENABLE_LEGACY_OCR_PIPELINE !== "true") return error(response, 410, "legacy_pipeline_disabled", "This legacy OCR route is disabled; use /documenta/documents/multimodal.");
   const body = asObject(request.body);
   if (body?.cloudOptIn !== true) return error(response, 403, "cloud_opt_in_required", "Cloud OCR requires explicit cloudOptIn: true.");
-  if (hasUnsupportedCloudMime(body?.pages)) return error(response, 415, "unsupported_cloud_mime", "Cloud OCR supports JPEG and PNG images only.");
+  if (hasUnsupportedCloudMime(body?.pages)) return error(response, 415, "unsupported_cloud_mime", "Cloud OCR supports JPEG, PNG, and PDF input only.");
   const pages = readCloudPages(body?.pages);
-  if (!pages) return error(response, 400, "invalid_request", "pages must contain 1 to 5 bounded base64 JPEG or PNG images.");
+  if (!pages) return error(response, 400, "invalid_request", "pages must contain 1 to 5 bounded base64 JPEG, PNG, or PDF inputs.");
   try {
     const operationId = randomUUID();
     const ocrText = await documentAiOcr(request.documentaUserId!, pages, operationId);
@@ -431,6 +685,33 @@ router.get("/documenta/documents/:id", async (request, response) => {
   const intelligence = await db.select().from(documentaIntelligence).where(and(eq(documentaIntelligence.documentId, document.id), eq(documentaIntelligence.userId, request.documentaUserId!)));
   const evidence = await db.select().from(documentaEvidence).where(and(eq(documentaEvidence.documentId, document.id), eq(documentaEvidence.userId, request.documentaUserId!)));
   response.json({ document, intelligence, evidence });
+});
+router.get("/documenta/documents/:id/canonical", async (request, response) => {
+  const userId = request.documentaUserId!;
+  const [document] = await db.select().from(documentaDocuments).where(and(eq(documentaDocuments.id, request.params.id), eq(documentaDocuments.userId, userId)));
+  if (!document) return error(response, 404, "not_found", "Document not found.");
+  const [intelligence] = await db.select().from(documentaIntelligence).where(and(eq(documentaIntelligence.documentId, document.id), eq(documentaIntelligence.userId, userId))).orderBy(desc(documentaIntelligence.updatedAt)).limit(1);
+  const canonical = intelligence ? asObject(intelligence.extraction) : undefined;
+  if (!canonical || !["gemini_flash", "gemini_pro"].includes(String(canonical.provider))) return error(response, 404, "canonical_not_found", "Canonical document data was not found.");
+  response.json({ documentId: document.id, canonical });
+});
+/** Applies human-reviewed fields to the same canonical server record. */
+router.patch("/documenta/documents/:id/review", async (request, response) => {
+  const body = asObject(request.body); const canonical = asObject(body?.canonical);
+  if (!canonical) return error(response, 400, "invalid_request", "A canonical review object is required.");
+  const userId = request.documentaUserId!;
+  const [document] = await db.select().from(documentaDocuments).where(and(eq(documentaDocuments.id, request.params.id), eq(documentaDocuments.userId, userId)));
+  if (!document) return error(response, 404, "not_found", "Document not found.");
+  const [intelligence] = await db.select().from(documentaIntelligence).where(and(eq(documentaIntelligence.documentId, document.id), eq(documentaIntelligence.userId, userId))).orderBy(desc(documentaIntelligence.createdAt)).limit(1);
+  if (!intelligence) return error(response, 409, "missing_canonical_record", "Document has no canonical extraction.");
+  const current: Record<string, unknown> = asObject(intelligence.extraction) ?? {};
+  const reviewed: Record<string, unknown> = { ...current, ...canonical, reviewStatus: "ready", provenance: { ...asObject(current.provenance), review: "user_reviewed" } };
+  await db.transaction(async tx => {
+    await tx.update(documentaDocuments).set({ title: nullableString(reviewed.title, 255) ?? document.title, updatedAt: new Date() }).where(eq(documentaDocuments.id, document.id));
+    await tx.update(documentaIntelligence).set({ family: DOCUMENT_FAMILIES.includes(reviewed.family as any) ? reviewed.family as string : intelligence.family, type: nullableString(reviewed.type, 100) ?? intelligence.type, summary: nullableString(reviewed.summary) ?? intelligence.summary, confidence: typeof reviewed.confidence === "number" ? reviewed.confidence : intelligence.confidence, validationState: "VALIDATED", extraction: reviewed, updatedAt: new Date() }).where(eq(documentaIntelligence.id, intelligence.id));
+    await tx.insert(documentaAuditEvents).values({ userId, documentId: document.id, eventType: "canonical_reviewed", provider: nullableString(asObject(current.provenance)?.provider, 100) ?? "gemini", model: intelligence.model, metadata: { fields: Object.keys(canonical) } });
+  });
+  response.json({ documentId: document.id, canonical: reviewed });
 });
 router.post("/documenta/documents/:id/corrections", async (request, response) => {
   const body = asObject(request.body); const field = text(body?.field, 100); const correctedValue = text(body?.correctedValue, 4000);

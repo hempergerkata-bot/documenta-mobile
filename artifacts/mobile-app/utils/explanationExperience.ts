@@ -25,7 +25,7 @@ export function isExplanationAdapterLanguage(language: string): language is Expl
   return language === 'de' || language === 'hu' || language === 'en';
 }
 
-export type QuestionIntent = 'identity' | 'sender' | 'recipient' | 'date' | 'amount' | 'deadline' | 'action' | 'reply' | 'uncertainty' | 'case' | 'change' | 'medical' | 'general';
+export type QuestionIntent = 'identity' | 'sender' | 'recipient' | 'date' | 'amount' | 'deadline' | 'reference' | 'purpose' | 'payment_terms' | 'action' | 'reply' | 'uncertainty' | 'case' | 'change' | 'medical' | 'general';
 export type SourceTrace = Readonly<{ field: string; source: 'confirmed' | 'intelligence'; evidence: readonly Evidence[] }>;
 export type ExplanationAnswer = Readonly<{ intent: QuestionIntent; text: string; supported: boolean; sourceTrace: readonly SourceTrace[]; safetyNotice?: string }>;
 const unsupported: Record<ExplanationSupportedLanguage, string> = {
@@ -39,14 +39,17 @@ const certaintyCopy: Record<ExplanationSupportedLanguage, { certain: string; unc
   en: { certain: 'According to the document', uncertain: 'Probably; this is not confirmed with certainty' },
 };
 const labels: Record<ExplanationSupportedLanguage, Record<string, string>> = {
-  de: { sender: 'Absender', recipient: 'Empfänger', date: 'Datum', amount: 'Betrag', deadline: 'Frist', action: 'Erforderliche Aktion', identity: 'Dokument', case: 'Fall', change: 'Änderung', reply: 'Antwort erforderlich' },
-  hu: { sender: 'Feladó', recipient: 'Címzett', date: 'Dátum', amount: 'Összeg', deadline: 'Határidő', action: 'Szükséges teendő', identity: 'Dokument', case: 'Ügy', change: 'Változás', reply: 'Válasz szükséges' },
-  en: { sender: 'Sender', recipient: 'Recipient', date: 'Date', amount: 'Amount', deadline: 'Deadline', action: 'Required action', identity: 'Document', case: 'Case', change: 'Change', reply: 'Response required' },
+  de: { sender: 'Absender', recipient: 'Empfänger', date: 'Datum', amount: 'Betrag', deadline: 'Frist', reference: 'Referenz', purpose: 'Zweck', payment_terms: 'Zahlungsbedingung', action: 'Erforderliche Aktion', identity: 'Dokument', case: 'Fall', change: 'Änderung', reply: 'Antwort erforderlich' },
+  hu: { sender: 'Feladó', recipient: 'Címzett', date: 'Dátum', amount: 'Összeg', deadline: 'Határidő', reference: 'Hivatkozási szám', purpose: 'Cél', payment_terms: 'Fizetési feltétel', action: 'Szükséges teendő', identity: 'Dokument', case: 'Ügy', change: 'Változás', reply: 'Válasz szükséges' },
+  en: { sender: 'Sender', recipient: 'Recipient', date: 'Date', amount: 'Amount', deadline: 'Deadline', reference: 'Reference', purpose: 'Purpose', payment_terms: 'Payment terms', action: 'Required action', identity: 'Document', case: 'Case', change: 'Change', reply: 'Response required' },
 };
 export function classifyQuestionIntent(question: string): QuestionIntent {
   const q = question.toLowerCase();
   if (/(sender|absender|feladó)/.test(q)) return 'sender';
   if (/(recipient|empfänger|címzett)/.test(q)) return 'recipient';
+  if (/(reference|referenz|invoice\s*(?:number|no)|customer\s*(?:number|no)|aktenzeichen|rechnungsnummer|kundennummer|hivatkoz|számlaszám|ügyfélszám)/.test(q)) return 'reference';
+  if (/(purpose|zweck|worum|miről szól|célja)/.test(q)) return 'purpose';
+  if (/(payment terms|zahlungsbeding|zahlungsziel|fizetési feltétel)/.test(q)) return 'payment_terms';
   if (/(deadline|frist|határid)/.test(q)) return 'deadline';
   if (/(amount|betrag|összeg|pay)/.test(q)) return 'amount';
   if (/(date|datum|dátum)/.test(q)) return 'date';
@@ -64,12 +67,18 @@ type Candidate = { value?: string; field: string; evidence: readonly Evidence[] 
 export function answerDocumentQuestion(result: DocumentIntelligenceResult, question: string, language: ExplanationSupportedLanguage, corrected: ConfirmedDocumentFields = {}): ExplanationAnswer {
   const intent = classifyQuestionIntent(question);
   const field = (key: string, candidate: Candidate): Candidate => corrected[key] ? { value: corrected[key], field: key, evidence: [] } : candidate;
+  const identifier = result.identifiers?.value?.find(item => item.kind === 'reference' && item.validation !== 'invalid');
+  const reference = result.dates.references?.value?.[0];
+  const deadline = eligibleDeadlines(result)[0];
   const candidateFor: Record<QuestionIntent, Candidate> = {
     sender: field('sender', { value: result.parties.sender.value, field: 'sender', evidence: result.parties.sender.evidence }),
     recipient: field('recipient', { value: result.parties.recipient.value, field: 'recipient', evidence: result.parties.recipient.evidence }),
     date: field('documentDate', { value: result.dates.documentDate.value, field: 'documentDate', evidence: result.dates.documentDate.evidence }),
     amount: field('amount', { value: isMainAmountEligible(result) ? result.amounts.main.value : undefined, field: 'amount', evidence: result.amounts.main.evidence }),
-    deadline: field('deadline', { value: eligibleDeadlines(result)[0]?.value, field: 'deadline', evidence: eligibleDeadlines(result)[0]?.evidence ?? [] }),
+    deadline: field('deadline', { value: deadline?.value, field: 'deadline', evidence: deadline?.evidence ?? [] }),
+    reference: field('referenceNumber', { value: identifier?.value ?? reference, field: 'referenceNumber', evidence: identifier?.evidence ?? result.dates.references?.evidence ?? [] }),
+    purpose: { value: result.taxonomy.purpose?.value, field: 'taxonomy.purpose', evidence: result.taxonomy.purpose?.evidence ?? [] },
+    payment_terms: field('paymentTerms', { value: deadline?.value, field: 'paymentTerms', evidence: deadline?.evidence ?? [] }),
     action: { value: result.actions[0]?.requirement, field: 'action', evidence: result.actions[0]?.evidence ?? [] },
     reply: { value: result.responseNecessary.value === true ? labels[language].reply : undefined, field: 'responseNecessary', evidence: result.responseNecessary.evidence },
     uncertainty: { value: result.reviewRequired ? result.reviewReasons.join('; ') : undefined, field: 'reviewRequired', evidence: [] },
@@ -82,7 +91,7 @@ export function answerDocumentQuestion(result: DocumentIntelligenceResult, quest
   const candidate = candidateFor[intent];
   const confirmed = Boolean(corrected[candidate.field]);
   const confidence = confirmed ? 'high' : candidate.evidence[0]?.confidence ?? 'unknown';
-  const critical = ['amount', 'deadline', 'reply', 'case', 'change', 'medical'].includes(intent);
+  const critical = ['amount', 'deadline', 'reference', 'payment_terms', 'reply', 'case', 'change', 'medical'].includes(intent);
   const valid = Boolean(candidate.value) && (confirmed || candidate.evidence.length > 0) && (!critical || confidence === 'high' || confidence === 'medium');
   const category = result.taxonomy.mainCategory.value ?? '';
   const notices: string[] = [];

@@ -80,18 +80,24 @@ export default function SavedDocumentDetailScreen() {
    const [relationshipKind, setRelationshipKind] = useState<'vorheriges' | 'antwort' | 'erinnerung' | 'zahlung' | 'abschluss'>('antwort');
   const [edit, setEdit] = useState({ title: '', sender: '', documentType: '', documentDate: '', receivedDate: '', relevantPeriodStart: '', relevantPeriodEnd: '', archiveYear: '', dueDate: '', amount: '', tags: '', note: '', category: '', status: 'Neu' as DocumentStatus, profileIds: [] as string[] });
   const document = documents.find((item) => item.id === id);
+  const isCanonicalCloudRecord = Boolean(
+    document?.cloudIntelligence?.canonical &&
+    ['gemini_flash', 'gemini_pro'].includes(document.cloudIntelligence.canonical.provider),
+  );
   const intelligence =
-    (isCurrentDocumentIntelligence(document?.intelligence) ? document.intelligence : undefined) ??
-    (document?.ocrText
-      ? analyzeDocumentIntelligence({
-          text: document.ocrText,
-          structuredFields: {
-            ...document.structuredFields,
-            sender: document.sender,
-            documentDate: document.documentDate,
-          },
-        })
-      : undefined);
+    isCanonicalCloudRecord
+      ? undefined
+      : (isCurrentDocumentIntelligence(document?.intelligence) ? document.intelligence : undefined) ??
+        (document?.ocrText
+          ? analyzeDocumentIntelligence({
+              text: document.ocrText,
+              structuredFields: {
+                ...document.structuredFields,
+                sender: document.sender,
+                documentDate: document.documentDate,
+              },
+            })
+          : undefined);
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
   const originalPages = document?.originalPageUris ?? [];
   const previewUri =
@@ -118,8 +124,14 @@ export default function SavedDocumentDetailScreen() {
         const corrected = selectedArchiveYear >= 1900 && selectedArchiveYear <= new Date().getUTCFullYear() + 1
           ? applyArchiveReview(correctedBase, { archiveYear: selectedArchiveYear, reviewStatus: 'corrected', at: new Date().toISOString(), reason: 'corrected' })
           : correctedBase;
-        const recalculated = current.ocrText ? analyzeDocumentIntelligence({ text: current.ocrText, structuredFields: { ...current.structuredFields, sender: corrected.sender, documentDate: corrected.documentDate, dueDate: corrected.dueDate, amount: corrected.amount, status: corrected.status } }) : undefined;
-        return { ...corrected, intelligence: recalculated ? applyReviewDecisions(recalculated, intelligenceReviewDecisions) : current.intelligence };
+        const hasCanonicalCloudRecord = Boolean(
+          current.cloudIntelligence?.canonical &&
+          ['gemini_flash', 'gemini_pro'].includes(current.cloudIntelligence.canonical.provider),
+        );
+        const recalculated = !hasCanonicalCloudRecord && current.ocrText
+          ? analyzeDocumentIntelligence({ text: current.ocrText, structuredFields: { ...current.structuredFields, sender: corrected.sender, documentDate: corrected.documentDate, dueDate: corrected.dueDate, amount: corrected.amount, status: corrected.status } })
+          : undefined;
+        return { ...corrected, intelligence: hasCanonicalCloudRecord ? undefined : recalculated ? applyReviewDecisions(recalculated, intelligenceReviewDecisions) : current.intelligence };
       },
     });
     setEditing(false);

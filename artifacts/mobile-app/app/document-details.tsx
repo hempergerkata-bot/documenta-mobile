@@ -15,7 +15,8 @@ import type { DocumentAnalysisField } from '@/utils/documentAnalysis';
 import { GENERAL_CATEGORIES } from '@/utils/documentCore';
 import { documentFingerprint, findDuplicates } from '@/utils/documentDomain';
 import { analyzeDocumentIntelligence, normalizeDocumentDate } from '@/utils/documentIntelligence';
-import { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudReviewValues } from '@/utils/documentaCloud';
+import { cloudIntelligenceFromCanonical, cloudReviewSuggestions, mergeCloudEvidence, mergeCloudReviewValues } from '@/utils/documentaCloud';
+import { saveCanonicalReview } from '@/utils/documentaCloud';
 import { observeScanCloudCompletion } from '@/utils/scanCloudCompletion';
 const categories = GENERAL_CATEGORIES;
 const documentTypes = [
@@ -107,18 +108,33 @@ export default function DocumentDetailsScreen() {
   }, [pendingAsset]);
 
   useEffect(() => {
-    if (!pendingAsset?.analysis) return;
+    if (!pendingAsset?.analysis && !pendingAsset?.cloudIntelligence) return;
     const revision = `${pendingAsset.documentId ?? pendingAsset.uri}:${pendingAsset.cloudIntelligence?.model ?? 'local'}:${pendingAsset.cloudIntelligence?.sourceText?.length ?? 0}`;
     if (analysisAppliedRef.current === revision) return;
     const firstApplication = analysisAppliedRef.current === '';
     analysisAppliedRef.current = revision;
-    const fields = pendingAsset.analysis.fields;
+    const fields = pendingAsset.analysis?.fields ?? {};
     const stringValue = (field: DocumentAnalysisField) => {
       const value = fields[field]?.value;
       return typeof value === 'string' ? value : '';
     };
+    const canonical = pendingAsset.cloudIntelligence?.canonical;
+    const canonicalValue = (field: string): string => {
+      if (!canonical) return '';
+      const values: Record<string, string | null | undefined> = {
+        title: canonical.title, sender: canonical.sender, recipient: canonical.recipient,
+        person: canonical.recipient, category: canonical.category ?? canonical.family,
+        subcategory: canonical.subcategory, documentType: canonical.type,
+        documentDate: canonical.documentDate, dueDate: canonical.dueDates[0]?.value,
+        amount: canonical.amounts[0]?.literal, iban: canonical.iban,
+        referenceNumber: canonical.references[0]?.value,
+      };
+      return values[field] ?? '';
+    };
+    // A successful multimodal record is already canonical. Do not run it
+    // through local/cloud suggestion merging or let local analysis supersede it.
     const localOrCloud = (field: DocumentAnalysisField | 'sender' | 'documentDate' | 'dueDate' | 'amount' | 'title' | 'category' | 'subcategory' | 'documentType' | 'payrollPeriod') =>
-      stringValue(field as DocumentAnalysisField) || (cloudSuggestions[field]?.autoFill ? cloudSuggestions[field].value : '') || '';
+      canonicalValue(field) || stringValue(field as DocumentAnalysisField) || (cloudSuggestions[field]?.autoFill ? cloudSuggestions[field].value : '') || '';
     if (firstApplication) {
       setTitle(localOrCloud('title'));
       setCategory(localOrCloud('category'));
@@ -135,7 +151,7 @@ export default function DocumentDetailsScreen() {
     setDocumentDate((current) => current || localOrCloud('documentDate'));
     setDueDate((current) => current || localOrCloud('dueDate'));
     setAmount((current) => current || localOrCloud('amount'));
-    setPerson((current) => current || stringValue('person') || (cloudSuggestions.person?.autoFill ? cloudSuggestions.person.value : '') || (cloudSuggestions.recipient?.autoFill ? cloudSuggestions.recipient.value : '') || '');
+    setPerson((current) => current || canonicalValue('person') || stringValue('person') || (cloudSuggestions.person?.autoFill ? cloudSuggestions.person.value : '') || (cloudSuggestions.recipient?.autoFill ? cloudSuggestions.recipient.value : '') || '');
     const suggestedStatus = stringValue('status');
     if (statusOptions.includes(suggestedStatus as DocumentStatus)) {
       setStatus((current) => current || (suggestedStatus as DocumentStatus));
@@ -144,7 +160,7 @@ export default function DocumentDetailsScreen() {
     if (Array.isArray(suggestedTags)) setTags(suggestedTags.join(', '));
     const extractedAdditionalFields: Record<string, string> = {};
     for (const field of additionalFieldLabels) {
-      const value = fields[field as DocumentAnalysisField]?.value || (cloudSuggestions[field]?.autoFill ? cloudSuggestions[field].value : '');
+      const value = canonicalValue(field) || fields[field as DocumentAnalysisField]?.value || (cloudSuggestions[field]?.autoFill ? cloudSuggestions[field].value : '');
       if (typeof value === 'string' && value.trim()) {
         extractedAdditionalFields[field] = value;
       }
@@ -235,6 +251,19 @@ export default function DocumentDetailsScreen() {
       setSaving(false);
       return;
     }
+    let authoritativeCloud = pendingAsset.cloudIntelligence;
+    if (pendingAsset.cloudIntelligence?.canonical?.documentId === id) {
+      const reviewedCanonical = await saveCanonicalReview(id, {
+        ...pendingAsset.cloudIntelligence.canonical,
+        title: trimmedTitle, sender: sender.trim() || null, recipient: person || null,
+        category, subcategory: subcategory.trim() || null, type: documentType,
+        documentDate: documentDate.trim() || null,
+        dueDates: dueDate.trim() ? [{ value: dueDate.trim(), label: null }] : [],
+        amounts: amount.trim() ? [{ literal: amount.trim(), normalized: null, currency: additionalFields.currency ?? null, role: null }] : [],
+        references: Object.entries(additionalFields).filter(([field]) => /reference|invoice|customer|contract|insurance/i.test(field)).map(([label, value]) => ({ label, value })),
+      });
+      authoritativeCloud = cloudIntelligenceFromCanonical(reviewedCanonical);
+    }
     const document: DocumentRecord = {
       id,
       title: trimmedTitle,
@@ -260,7 +289,7 @@ export default function DocumentDetailsScreen() {
        blackWhitePageUris: persistentAssets.blackWhitePageUris,
       selectedVariant: pendingAsset.selectedVariant,
       reconstructionDiagnostics: pendingAsset.reconstructionDiagnostics,
-      ocrText: pendingAsset.analysis?.text || undefined,
+      ocrText: pendingAsset.cloudIntelligence?.sourceText || pendingAsset.analysis?.text || undefined,
       ocrStatus: pendingAsset.ocrStatus,
       ocrPageResults: pendingAsset.ocrPageResults,
       source: pendingAsset.source,
@@ -272,7 +301,7 @@ export default function DocumentDetailsScreen() {
           value?.confidence,
         ]),
       ),
-      cloudIntelligence: pendingAsset.cloudIntelligence,
+       cloudIntelligence: authoritativeCloud,
       cloudState: pendingAsset.cloudState,
       cloudPipeline: pendingAsset.cloudPipeline,
       intelligence: pendingAsset.analysis

@@ -7,6 +7,7 @@ import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/hooks/useTranslation';
 import { exportPdfPackage, type ExportPdfPackageErrorCode } from '@/utils/exportPdfPackage';
 import type { TranslationKey } from '@/utils/localization';
+import { canonicalPdfUri } from '@/utils/documentFiles';
 
 const targets = ['accountant', 'lawyer', 'authority', 'doctor'] as const;
 const errorKeys: Record<ExportPdfPackageErrorCode, TranslationKey> = {
@@ -32,9 +33,7 @@ export default function ExportPackageScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  const pdfUri = (document: typeof docs[number]) =>
-    document.pdfUri || (document.mimeType?.toLowerCase().includes('pdf') ? document.uri : undefined);
-  const exportable = docs.filter((document) => !!pdfUri(document));
+  const exportable = docs.filter((document) => !!canonicalPdfUri(document));
   const move = (index: number, by: number) => setIds((current) => {
     const next = [...current];
     const target = index + by;
@@ -51,7 +50,7 @@ export default function ExportPackageScreen() {
       const selected = ids
         .map((id) => docs.find((document) => document.id === id))
         .filter((document): document is typeof docs[number] => !!document)
-        .map((document) => ({ title: document.title, uri: pdfUri(document) }))
+        .map((document) => ({ title: document.title, uri: canonicalPdfUri(document) }))
         .filter((document): document is { title: string; uri: string } => !!document.uri);
       if (selected.length !== ids.length) {
         setError(t('export.errorSourceUnavailable'));

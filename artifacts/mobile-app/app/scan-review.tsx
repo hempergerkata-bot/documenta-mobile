@@ -21,8 +21,7 @@ import { createPersistentScannedDocument, deleteTemporaryScanPages } from '@/uti
 import { recognizeAndAnalyzeDocument } from '@/utils/documentOcr';
 import { MAX_SCAN_PAGES } from '@/utils/scanLimits';
 import type { DocumentVariant } from '@/utils/documentReconstruction';
-import { checkCloudProviderStatus, loadCloudConsent, persistCloudConsent, processScanCloudPipeline, type CloudProviderStatus, type CloudState } from '@/utils/documentaCloud';
-import { publishScanCloudCompletion } from '@/utils/scanCloudCompletion';
+import { checkCloudProviderStatus, cloudIntelligenceFromCanonical, loadCloudConsent, persistCloudConsent, processMultimodalDocument, type CloudProviderStatus, type CloudState } from '@/utils/documentaCloud';
 
 export default function ScanReviewScreen() {
   const colors = useColors();
@@ -55,7 +54,7 @@ export default function ScanReviewScreen() {
         const status = await checkCloudProviderStatus();
         if (active) {
           setProviderStatus(status);
-          setCloudState(status.documentAi === 'CONFIGURED' && status.gemini === 'CONFIGURED' ? 'cloud' : 'unavailable');
+          setCloudState(status.gemini === 'CONFIGURED' ? 'cloud' : 'unavailable');
         }
       } catch {
         if (active) setCloudState('unavailable');
@@ -64,25 +63,22 @@ export default function ScanReviewScreen() {
     return () => { active = false; };
   }, []);
 
-  const cloudForLocalOcr = async (
-    text: string,
-    localOcrStatus: 'complete' | 'partial' | 'empty' | 'failed',
+  const cloudForPages = async (
     name: string,
     pageUris: string[],
   ) => {
-    // The state machine itself enforces opt-in before invoking remote providers.
-    const result = await processScanCloudPipeline({
-      optedIn: cloudOptIn,
-      localText: text,
-      localOcrStatus,
-      title: name,
-      pageUris,
-    });
-    setCloudState(result.pipeline.cloudState);
+    const canonical = await processMultimodalDocument(pageUris, name);
+    const cloudIntelligence = cloudIntelligenceFromCanonical(canonical);
+    const pipeline = {
+      optedIn: true, localOcr: { state: 'empty' as const, textAvailable: false },
+      documentAiOcr: { state: 'skipped' as const }, gemini: { state: 'succeeded' as const },
+      fallbackUsed: false, failures: [], finalProvider: 'cloud_processing' as const, cloudState: 'cloud' as const,
+    };
+    setCloudState('cloud');
     return {
-      cloudState: result.pipeline.cloudState,
-      cloudPipeline: result.pipeline,
-      ...(result.cloudIntelligence ? { cloudIntelligence: result.cloudIntelligence } : {}),
+      cloudState: 'cloud' as const,
+      cloudPipeline: pipeline,
+      cloudIntelligence,
     };
   };
 
@@ -146,6 +142,34 @@ export default function ScanReviewScreen() {
       if (!isGalleryImport) {
         const result = await createPersistentScannedDocument(pages, documentId, selectedVariant);
         setBusyLabel(t('scan.recognizing'));
+        if (cloudOptIn) {
+          const name = `Documenta Scan · ${pages.length} ${pages.length === 1 ? t('common.page') : t('common.pages')}`;
+          const cloud = await cloudForPages(name, result.originalPageUris);
+          setPendingAsset({
+            uri: result.pdfUri,
+            pdfUri: result.pdfUri,
+            pageUris: result.pageUris,
+            originalPageUris: result.originalPageUris,
+            cleanPageUris: result.cleanPageUris,
+            blackWhitePageUris: result.blackWhitePageUris,
+            selectedVariant: result.selectedVariant,
+            reconstructionDiagnostics: result.diagnostics,
+            name,
+            mimeType: 'application/pdf',
+            source: 'scanner',
+            documentId: cloud.cloudIntelligence.canonical?.documentId ?? documentId,
+            ocrStatus: 'complete',
+            ocrPageResults: cloud.cloudIntelligence?.ocrPages?.map((page) => ({
+              pageIndex: page.pageIndex,
+              status: 'complete' as const,
+              text: page.text,
+            })),
+            ...cloud,
+          });
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          router.replace('/document-details');
+          return;
+        }
         const analysis = await recognizeAndAnalyzeDocument(
           result.pageUris,
           result.originalPageUris,
@@ -171,7 +195,7 @@ export default function ScanReviewScreen() {
             cloudPipeline: {
               optedIn: true,
               localOcr: { state: analysis.text.trim() ? 'succeeded' as const : analysis.ocrStatus === 'failed' ? 'failed' as const : 'empty' as const, textAvailable: !!analysis.text.trim() },
-              documentAiOcr: { state: 'running' as const },
+               documentAiOcr: { state: 'skipped' as const },
               gemini: { state: 'pending' as const },
               fallbackUsed: false,
               failures: [],
@@ -183,36 +207,33 @@ export default function ScanReviewScreen() {
         setPendingAsset(localAsset);
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         router.replace('/document-details');
-        if (cloudOptIn) void cloudForLocalOcr(analysis.text, analysis.ocrStatus, `Documenta Scan ${pages.length}`, result.originalPageUris)
-          .then((cloud) => {
-            // The details screen may already have saved and cleared pendingAsset.
-            // Publish by stable id as well as updating the still-open review form.
-            publishScanCloudCompletion(documentId, cloud);
-            setPendingAsset((current) => current?.documentId === documentId ? { ...current, ...cloud } : current);
-          })
-          .catch(() => {
-            const completion = {
-              cloudState: 'unavailable' as const,
-              cloudPipeline: {
-                optedIn: true,
-                localOcr: { state: analysis.text.trim() ? 'succeeded' as const : 'failed' as const, textAvailable: !!analysis.text.trim() },
-                documentAiOcr: { state: 'failed' as const },
-                gemini: { state: 'failed' as const },
-                fallbackUsed: false,
-                failures: [{ stage: 'gemini' as const, reason: 'service_unavailable' as const, message: 'Cloud processing failed unexpectedly.' }],
-                failureReason: 'service_unavailable' as const,
-                finalProvider: analysis.text.trim() ? 'local_only' as const : 'local_unavailable' as const,
-                cloudState: 'unavailable' as const,
-              },
-            };
-            publishScanCloudCompletion(documentId, completion);
-            setPendingAsset((current) => current?.documentId === documentId ? { ...current, ...completion } : current);
-          });
         return;
       }
 
       setBusyLabel(t('scan.recognizing'));
       try {
+        if (cloudOptIn) {
+          const name = pendingAsset?.name ?? `${t('add.image')}.jpg`;
+          const cloud = await cloudForPages(name, pages);
+          setPendingAsset({
+            uri: pendingAsset?.uri ?? pages[0],
+            name,
+            mimeType: pendingAsset?.mimeType,
+            source: 'gallery',
+            documentId: cloud.cloudIntelligence.canonical?.documentId ?? documentId,
+            pageUris: pages,
+            ocrStatus: 'complete',
+            ocrPageResults: cloud.cloudIntelligence?.ocrPages?.map((page) => ({
+              pageIndex: page.pageIndex,
+              status: 'complete' as const,
+              text: page.text,
+            })),
+            ...cloud,
+          });
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          router.replace('/document-details');
+          return;
+        }
         const analysis = await recognizeAndAnalyzeDocument(pages);
         const localAsset = {
           uri: pendingAsset?.uri ?? pages[0],
@@ -229,7 +250,7 @@ export default function ScanReviewScreen() {
             cloudPipeline: {
               optedIn: true,
               localOcr: { state: analysis.text.trim() ? 'succeeded' as const : analysis.ocrStatus === 'failed' ? 'failed' as const : 'empty' as const, textAvailable: !!analysis.text.trim() },
-              documentAiOcr: { state: 'running' as const },
+               documentAiOcr: { state: 'skipped' as const },
               gemini: { state: 'pending' as const },
               fallbackUsed: false,
               failures: [],
@@ -239,30 +260,8 @@ export default function ScanReviewScreen() {
           } : {}),
         };
         setPendingAsset(localAsset);
-        if (cloudOptIn) void cloudForLocalOcr(analysis.text, analysis.ocrStatus, localAsset.name, pages)
-          .then((cloud) => {
-            publishScanCloudCompletion(documentId, cloud);
-            setPendingAsset((current) => current?.documentId === documentId ? { ...current, ...cloud } : current);
-          })
-          .catch(() => {
-            const completion = {
-              cloudState: 'unavailable' as const,
-              cloudPipeline: {
-                optedIn: true,
-                localOcr: { state: analysis.text.trim() ? 'succeeded' as const : 'failed' as const, textAvailable: !!analysis.text.trim() },
-                documentAiOcr: { state: 'failed' as const },
-                gemini: { state: 'failed' as const },
-                fallbackUsed: false,
-                failures: [{ stage: 'gemini' as const, reason: 'service_unavailable' as const, message: 'Cloud processing failed unexpectedly.' }],
-                failureReason: 'service_unavailable' as const,
-                finalProvider: analysis.text.trim() ? 'local_only' as const : 'local_unavailable' as const,
-                cloudState: 'unavailable' as const,
-              },
-            };
-            publishScanCloudCompletion(documentId, completion);
-            setPendingAsset((current) => current?.documentId === documentId ? { ...current, ...completion } : current);
-          });
-      } catch {
+      } catch (caught) {
+        if (cloudOptIn) throw caught;
         // A recognition failure must not prevent the user from filing a scan.
         // The persisted page assets remain available for manual review.
         setPendingAsset({
@@ -430,7 +429,7 @@ export default function ScanReviewScreen() {
             if (next) void checkCloudProviderStatus()
               .then((status) => {
                 setProviderStatus(status);
-                setCloudState(status.documentAi === 'CONFIGURED' && status.gemini === 'CONFIGURED' ? 'cloud' : 'unavailable');
+                setCloudState(status.gemini === 'CONFIGURED' ? 'cloud' : 'unavailable');
               })
               .catch(() => setCloudState('unavailable'));
           }}
@@ -447,7 +446,7 @@ export default function ScanReviewScreen() {
             <Text style={[styles.qualityText, { color: colors.mutedForeground }]}>
               {cloudOptIn
                 ? providerStatus
-                  ? `Document AI: ${providerStatus.documentAi} · Gemini: ${providerStatus.gemini}`
+                    ? `Gemini: ${providerStatus.gemini}`
                   : t('common.open')
                 : t('explanation.localOnly')}
             </Text>

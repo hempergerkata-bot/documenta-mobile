@@ -11,9 +11,10 @@ test("redacts unknown provider errors", () => {
   assert.equal(normalizeDocumentAiError(new Error("credential detail")), "document_ai_failed");
 });
 
-test("rejects PDF during validation before provider orchestration", () => {
-  assert.equal(hasUnsupportedCloudMime([{ mimeType: "application/pdf", contentBase64: "AA==" }]), true);
+test("accepts PDF and rejects unsupported cloud MIME input", () => {
+  assert.equal(hasUnsupportedCloudMime([{ mimeType: "application/pdf", contentBase64: "AA==" }]), false);
   assert.equal(hasUnsupportedCloudMime([{ mimeType: "image/png", contentBase64: "AA==" }]), false);
+  assert.equal(hasUnsupportedCloudMime([{ mimeType: "text/plain", contentBase64: "AA==" }]), true);
 });
 
 test("both cloud routes perform MIME rejection before Document AI invocation", async () => {

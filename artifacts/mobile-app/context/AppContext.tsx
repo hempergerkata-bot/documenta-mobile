@@ -1,4 +1,598 @@
- ReplyDraftCandidate => !!item);
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState } from 'react-native';
+import { File } from 'expo-file-system';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import type {
+  AnalysisConfidence,
+  DocumentAnalysisResult,
+} from '@/utils/documentAnalysis';
+import {
+  analyzeDocumentIntelligence,
+  applyReviewDecisions,
+  isCurrentDocumentIntelligence,
+  type Confidence,
+  type DocumentIntelligenceResult,
+  type ReviewDecision,
+} from '@/utils/documentIntelligence';
+import {
+  ACTION_ENGINE_SCHEMA_VERSION,
+  actionsMatchingAutomation,
+  createCalendarCandidate,
+  createFollowUpCandidate,
+  createReminderCandidate,
+  createReplyDraftCandidate,
+  dedupeActions,
+  dedupeCandidates,
+  deriveActionsFromDocument,
+  editAction as editActionRecord,
+  mergeDerivedActions,
+  migrateActionEngineState,
+  reconcileAutomationCandidates,
+  transitionAction,
+  type ActionEngineDocument,
+  type ActionEngineState,
+  type ActionRecord,
+  type ActionStatus,
+  type AutomationRule,
+  type CalendarEventCandidate,
+  type FollowUpRecord,
+  type ReminderRecord,
+  type ReplyDraftCandidate,
+} from '@/utils/actionEngine';
+import type {
+  DocumentVariant,
+  ReconstructionDiagnostics,
+} from '@/utils/documentReconstruction';
+import type {
+  OcrDocumentStatus,
+  OcrPageResult,
+} from '@/utils/documentOcr';
+import type { CloudIntelligence, CloudState, ScanCloudPipelineState } from '@/utils/documentaCloud';
+import { cloudIntelligenceFromCanonical, loadCanonicalDocument } from '@/utils/documentaCloud';
+import { primaryCanonicalAmount } from '@/utils/canonicalDocument';
+import { DOCUMENT_STATUSES, hasFeature as checkFeature, migrateProfileIds, type DocumentStatus as CoreDocumentStatus, type Entitlements, type Feature } from '@/utils/documentCore';
+import {
+  cleanupDeletedDocument, documentFingerprint, selectActiveDocuments, type ActivityRecord, type BusinessWorkspace, type CaseRecord, type ContractMonitor,
+  type DocumentRelationship, type ExportPackage, type FamilyWorkspace, type NotificationRecord, type OnboardingState,
+  type RecurringCost, type SecuritySettings,
+} from '@/utils/documentDomain';
+import {
+  buildArchiveIndex,
+  buildCaseTimeline,
+  buildDocumentTimeline,
+  migrateArchiveDocument,
+  type ArchiveAuditEntry,
+  type ArchiveIndex,
+  type TimelineEventRecord,
+} from '@/utils/archive';
+import {
+  detectDeviceLanguage,
+  isExplanationLanguage,
+  migrateLanguagePreferences,
+  type AppLanguage,
+} from '@/utils/localization';
+import type {
+  ConversationRecord,
+  ExplanationDisplayMode,
+  ExplanationRequestState,
+  TranslationMode,
+  TranslationState,
+} from '@/utils/explanationExperience';
+import {
+  buildSearchIndex,
+  emptySearchContext,
+  SEARCH_INDEX_VERSION,
+  type AssistantMessage,
+  type SearchConversationContext,
+  type SearchHistoryRecord,
+  type SearchIndexEntry,
+  type SearchIntent,
+} from '@/utils/semanticSearch';
+import {
+  auditEntry,
+  calendarCandidateFromAction,
+  createCalendarEvent,
+  createDefaultIntegrationState,
+  createTesterEntitlement,
+  hasPremiumEntitlement,
+  createNotificationInstance,
+  createNotificationSchedule,
+  createPreparedEmailAccount,
+  isDuplicateEmailImport,
+  migrateIntegrationState,
+  notificationDedupeKey,
+  sourceTraceFor,
+  type CalendarCandidate,
+  type CalendarEvent,
+  type EmailAccount,
+  type EmailMessage,
+  type EmailProviderType,
+  type IntegrationState,
+  type NotificationInstance,
+  type NotificationRule,
+} from '@/utils/premiumIntegrations';
+import { deviceTimeZone, type ImportRange } from '@/utils/realIntegrations';
+import { cancelLocalNotification, recoverLocalNotifications, scheduleLocalNotification } from '@/utils/nativeIntegrations';
+import { connectGoogleDriveBackupProvider, disconnectOAuthProvider } from '@/utils/providerAdapters';
+import { removeImapPassword } from '@/utils/secureCredentials';
+import { createBackup, discoverBackupPreviews, prepareRestore, type BackupAuditEvent, type BackupJournal, type BackupPreview, type BackupProgress, type RestorePlan } from '@/utils/backupService';
+import { sha256Hex } from '@/utils/backupCrypto';
+import { platformCryptoProvider } from '@/utils/backupCryptoProvider';
+import { GoogleDriveBackupAdapter, publishGoogleDriveSnapshot } from '@/utils/googleDriveAdapter';
+import { chooseLocalBackup, createLocalBackupBundle, parseLocalBackupBundle, relinkLocalBundleState, shareLocalBackup, stageBackupAssetBytes, stageBackupAssets } from '@/utils/backupNative';
+import type { CloudAccount } from '@/utils/backupDomain';
+import { canonicalizeManifest } from '@/utils/backupDomain';
+import { disableUnenforcedSecurity, requireCloudAccountRevalidation } from '@/utils/truthfulness';
+import { validateDocumentAssets, type DocumentAssetState } from '@/utils/documentFiles';
+
+export type DocumentStatus = CoreDocumentStatus;
+export { DOCUMENT_STATUSES };
+export type UserProfile = { id: string; name: string; kind: 'default' | 'custom'; createdAt: string };
+export type DocumentTask = { id: string; documentId: string; caseId?: string; title: string; dueDate?: string; priority: 'niedrig' | 'mittel' | 'hoch'; completed: boolean; createdAt: string };
+export type Settings = {
+  theme: 'system' | 'hell' | 'dunkel';
+  accent: 'koralle' | 'salbei' | 'lila';
+  fontSize: 'klein' | 'mittel' | 'groß';
+  appLanguage: AppLanguage;
+  explanationLanguage: AppLanguage;
+  replyLanguage: AppLanguage;
+  residenceCountry: string;
+  translationMode: TranslationMode;
+  explanationDisplayMode: ExplanationDisplayMode;
+  /** Locally installed voice identifier chosen for each explanation language. */
+  explanationVoiceIdentifiers?: Partial<Record<AppLanguage, string>>;
+  /** Legacy alias accepted only while reading old persisted state. */
+  defaultResponseLanguage?: 'Deutsch' | 'Magyar' | 'English' | AppLanguage;
+  voiceGender: 'weiblich' | 'männlich';
+  speechRate: 'langsam' | 'normal' | 'schnell';
+  explanationMode: 'kurz' | 'normal' | 'detailliert';
+  entitlements: Partial<Entitlements>;
+};
+
+export type DocumentRecord = {
+  id: string;
+  title: string;
+  sender: string;
+  category: string;
+  subcategory: string;
+  documentType: string;
+  documentDate: string;
+  payrollPeriod?: string;
+  dueDate?: string;
+  amount?: string;
+  person: string;
+  profileIds?: string[];
+  status: DocumentStatus;
+  tags: string[];
+  note?: string;
+  uri?: string;
+  mimeType?: string;
+  pdfUri?: string;
+  pageUris?: string[];
+  originalPageUris?: string[];
+  cleanPageUris?: string[];
+  blackWhitePageUris?: string[];
+  selectedVariant?: DocumentVariant;
+  reconstructionDiagnostics?: ReconstructionDiagnostics[];
+  ocrText?: string;
+  ocrStatus?: OcrDocumentStatus;
+  ocrPageResults?: OcrPageResult[];
+  analysisUncertainFields?: string[];
+  structuredFields?: Record<string, string>;
+  analysisConfidenceByField?: Record<string, AnalysisConfidence>;
+  intelligence?: DocumentIntelligenceResult;
+  intelligenceReviewDecisions?: Record<string, ReviewDecision>;
+  /** Optional cloud metadata; local OCR/intelligence remains the source of record. */
+  cloudIntelligence?: CloudIntelligence;
+  cloudState?: CloudState;
+  cloudPipeline?: ScanCloudPipelineState;
+  createdAt: string;
+  lifecycle?: 'aktiv' | 'archiviert' | 'papierkorb';
+  fingerprint?: string;
+  source?: 'camera' | 'gallery' | 'file' | 'scanner' | 'gmail' | 'email';
+  duplicateCandidateStatus?: 'none' | 'warning' | 'confirmed';
+  receivedDate?: string;
+  importedAt?: string;
+  caseOriginDate?: string;
+  caseOriginYear?: number;
+  relevantPeriodStart?: string;
+  relevantPeriodEnd?: string;
+  archiveYear?: number;
+  archiveYearConfidence?: Confidence;
+  archiveYearEvidence?: import('@/utils/documentIntelligence').Evidence[];
+  archiveYearSource?: import('@/utils/archive').ArchiveYearSource;
+  archiveDateStatus?: import('@/utils/archive').ArchiveDateStatus;
+  archiveYearManual?: boolean;
+  archiveAuditTrail?: ArchiveAuditEntry[];
+  duplicateDecision?: import('@/utils/archive').DuplicateDecision;
+  archiveReviewStatus?: 'pending' | 'accepted' | 'corrected' | 'unknown' | 'later';
+  assetState?: DocumentAssetState;
+};
+
+export type PendingAsset = {
+  uri: string;
+  name: string;
+  mimeType?: string;
+  source: 'camera' | 'gallery' | 'file' | 'scanner';
+  pdfUri?: string;
+  pageUris?: string[];
+  originalPageUris?: string[];
+  cleanPageUris?: string[];
+  blackWhitePageUris?: string[];
+  selectedVariant?: DocumentVariant;
+  reconstructionDiagnostics?: ReconstructionDiagnostics[];
+  documentId?: string;
+  analysis?: DocumentAnalysisResult;
+  ocrStatus?: OcrDocumentStatus;
+  ocrPageResults?: OcrPageResult[];
+  cloudIntelligence?: CloudIntelligence;
+  cloudState?: CloudState;
+  cloudPipeline?: ScanCloudPipelineState;
+};
+
+export type BackupAppState = {
+  accounts: CloudAccount[];
+  snapshots: readonly BackupPreview[];
+  automatic: { enabled: boolean; foregroundOnly: boolean; retention: number };
+  latestSuccessfulBackupAt?: string;
+  latestSuccessfulRestoreAt?: string;
+  progress: BackupProgress;
+  error?: string;
+  audit: BackupAuditEvent[];
+  restorePreview?: { manifestId: string; conflicts: number; manualConflicts: number; readyToCommit: boolean };
+  interruptionJournal?: BackupJournal;
+};
+const defaultBackupState = (): BackupAppState => ({
+  accounts: [], snapshots: [], automatic: { enabled: false, foregroundOnly: true, retention: 3 },
+  progress: { state: 'idle', stage: '', completedFiles: 0, totalFiles: 0, completedBytes: 0, totalBytes: 0 }, audit: [],
+});
+
+type StoredState = {
+  version: number;
+  checkIns: Record<string, boolean>;
+  journalEntries: string[];
+  documents: DocumentRecord[];
+  profiles: UserProfile[];
+  tasks: DocumentTask[];
+  settings: Settings;
+  cases: CaseRecord[]; relationships: DocumentRelationship[]; notifications: NotificationRecord[]; activities: ActivityRecord[];
+  exportPackages: ExportPackage[]; security: SecuritySettings; onboarding: OnboardingState; family: FamilyWorkspace; business: BusinessWorkspace;
+  contracts: ContractMonitor[]; recurringCosts: RecurringCost[]; demoEnabled: boolean;
+  compareRecords: import('@/utils/documentDomain').CompareRecord[];
+  actionEngine: ActionEngineState;
+  conversations: ConversationRecord[];
+  conversationThreads: Record<string, string>;
+  explanationStates: Record<string, { requestState: ExplanationRequestState; translationState: TranslationState; updatedAt: string }>;
+  assistantContext: SearchConversationContext;
+  assistantMessages: AssistantMessage[];
+  searchHistory: SearchHistoryRecord[];
+  searchIndexVersion: number;
+  searchIndexRevision: number;
+  searchIndexRebuiltAt?: string;
+  integrations: IntegrationState;
+  backup: BackupAppState;
+};
+
+type AppContextValue = StoredState & {
+  hydrated: boolean;
+  pendingAsset: PendingAsset | null;
+  toggleCheckIn: (id: string) => void;
+  addJournalEntry: (entry: string) => void;
+  removeJournalEntry: (entry: string) => void;
+  addDocument: (document: DocumentRecord) => Promise<void>;
+  /**
+   * Merges a saved document update into the canonical record. Scan/cloud
+   * callers may pass `{ id, cloudIntelligence, cloudState, cloudPipeline }`
+   * after `await addDocument(...)`; unknown ids are never created here.
+   */
+  updateDocument: (document: DocumentRecord | (Pick<DocumentRecord, 'id'> & Partial<DocumentRecord>) | { id: string; update: (current: DocumentRecord) => DocumentRecord }) => Promise<void>;
+  addProfile: (name: string) => void;
+  renameProfile: (id: string, name: string) => void;
+  addTask: (task: DocumentTask) => void;
+  toggleTask: (id: string) => void;
+  updateTask: (task: DocumentTask) => void;
+  updateSettings: (settings: Partial<Settings>) => void;
+  hasFeature: (feature: Feature) => boolean;
+  setPendingAsset: React.Dispatch<React.SetStateAction<PendingAsset | null>>;
+  clearPendingAsset: () => void;
+  cases: CaseRecord[]; relationships: DocumentRelationship[]; notifications: NotificationRecord[]; activities: ActivityRecord[];
+  exportPackages: ExportPackage[]; security: SecuritySettings; onboarding: OnboardingState; family: FamilyWorkspace; business: BusinessWorkspace;
+  contracts: ContractMonitor[]; recurringCosts: RecurringCost[]; demoEnabled: boolean;
+  addCase: (item: CaseRecord) => void; updateCase: (item: CaseRecord) => void; addRelationship: (item: DocumentRelationship) => void;
+  markNotificationRead: (id: string) => void; addExportPackage: (item: ExportPackage) => void;
+  archiveDocument: (id: string) => void; restoreDocument: (id: string) => void; trashDocument: (id: string) => void; permanentlyDeleteDocument: (id: string) => void;
+  updateSecurity: (item: Partial<SecuritySettings>) => void; completeOnboarding: (item: OnboardingState) => void; setDemoEnabled: (enabled: boolean) => void;
+  addActivity: (type: ActivityRecord['type'], message: string) => void;
+  addContract: (item: ContractMonitor) => void;
+  addRecurringCost: (item: RecurringCost) => void;
+  activeDocuments: DocumentRecord[]; activeCases: CaseRecord[]; activeTasks: DocumentTask[]; activeNotifications: NotificationRecord[];
+  markGeneratedNotificationRead: (id: string) => void; addCompareRecord: (item: import('@/utils/documentDomain').CompareRecord) => void;
+  actions: ActionRecord[]; reminders: ReminderRecord[]; followUps: FollowUpRecord[]; replyDrafts: ReplyDraftCandidate[]; calendarCandidates: CalendarEventCandidate[]; automationRules: AutomationRule[];
+  activeActions: ActionRecord[];
+  archiveIndex: ArchiveIndex;
+  timelineEvents: TimelineEventRecord[];
+  documentTimeline: (id: string) => TimelineEventRecord[];
+  caseTimeline: (id: string) => TimelineEventRecord[];
+  conversations: ConversationRecord[];
+  conversationForDocument: (documentId: string) => readonly ConversationRecord[];
+  addConversationExchange: (documentId: string, question: string, answer: string) => void;
+  resetDocumentConversation: (documentId: string) => void;
+  startNewDocumentConversation: (documentId: string) => void;
+  explanationStateForDocument: (documentId: string) => { requestState: ExplanationRequestState; translationState: TranslationState; updatedAt?: string };
+  updateExplanationState: (documentId: string, requestState: ExplanationRequestState, translationState: TranslationState) => void;
+  searchIndex: readonly SearchIndexEntry[];
+  setAssistantContext: (context: SearchConversationContext) => void;
+  resetAssistantContext: () => void;
+  addAssistantExchange: (query: string, answer: string, intent: SearchIntent, resultIds: readonly string[], nextContext: SearchConversationContext) => void;
+  clearAssistantConversation: () => void;
+  clearSearchHistory: () => void;
+  rebuildSearchIndex: () => void;
+  addAction: (item: ActionRecord) => void; updateAction: (item: ActionRecord) => void; confirmAction: (id: string) => void; completeAction: (id: string) => void; reopenAction: (id: string) => void; cancelAction: (id: string) => void; rejectAction: (id: string) => void; archiveAction: (id: string) => void; editAction: (id: string, patch: Partial<Pick<ActionRecord, 'title' | 'description' | 'dueDate' | 'priority' | 'status'>>) => void;
+  addReminder: (item: ReminderRecord) => void; addFollowUp: (item: FollowUpRecord) => void; addReplyDraft: (item: ReplyDraftCandidate) => void; addCalendarCandidate: (item: CalendarEventCandidate) => void; addAutomationRule: (item: AutomationRule) => void;
+  integrations: IntegrationState;
+  prepareEmailConnection: (providerType: EmailProviderType, emailAddress?: string) => EmailAccount;
+  activateTesterAccess: (days: 15 | 30) => void;
+  completeEmailConnection: (account: EmailAccount) => void;
+   updateEmailSyncRange: (accountId: string, range: ImportRange, cursor?: string) => void;
+   updateEmailConnectionStatus: (accountId: string, status: import('@/utils/premiumIntegrations').ConnectionStatus, errorCode?: EmailAccount['errorCode']) => void;
+   addEmailMessages: (messages: EmailMessage[], attachments?: import('@/utils/premiumIntegrations').EmailAttachment[]) => void;
+  disconnectEmailConnection: (accountId: string) => void;
+  addEmailMessage: (message: EmailMessage) => void;
+  confirmEmailImport: (messageId: string, documentId?: string, caseId?: string) => void;
+  addCalendarCandidateFromAction: (item: CalendarEventCandidate) => CalendarCandidate;
+   confirmCalendarCandidate: (candidateId: string) => void;
+   setCalendarAccountTarget: (account: import('@/utils/premiumIntegrations').CalendarAccount) => void;
+   persistCalendarEvent: (candidateId: string, input: Pick<CalendarEvent, 'providerType' | 'providerEventId' | 'calendarAccountId' | 'calendarId' | 'title' | 'startAt' | 'endAt' | 'timezone'>) => void;
+  addNotificationRule: (rule: NotificationRule) => void;
+  createNotification: (ruleId: string, input: { title: string; body: string; scheduledFor: string; documentId?: string; caseId?: string; actionId?: string; sourceDeadline?: string }) => NotificationInstance | undefined;
+  createNotificationForAction: (actionId: string) => NotificationInstance | undefined;
+  connectGoogleDriveBackup: () => Promise<void>;
+  disconnectGoogleDriveBackup: () => Promise<void>;
+  createCloudBackup: (passphrase: string) => Promise<void>;
+  cancelBackup: () => void;
+  discoverBackupRestore: (passphrase: string) => Promise<void>;
+  prepareCloudRestore: (manifestId: string, passphrase: string) => Promise<void>;
+  confirmCloudRestore: () => Promise<void>;
+  deleteCloudSnapshot: (manifestId: string) => Promise<void>;
+  exportLocalBackup: (passphrase: string) => Promise<void>;
+  importLocalBackup: (passphrase: string) => Promise<void>;
+  updateBackupPolicy: (automatic: Partial<BackupAppState['automatic']>) => void;
+};
+
+const STORAGE_KEY = '@documenta/app-state';
+const CURRENT_VERSION = 8;
+const createDefaultSettings = (): Settings => {
+  const deviceLanguage = detectDeviceLanguage();
+  return {
+    theme: 'system',
+    accent: 'koralle',
+    fontSize: 'mittel',
+    appLanguage: deviceLanguage,
+    explanationLanguage: deviceLanguage,
+    replyLanguage: deviceLanguage,
+    residenceCountry: 'UNKNOWN',
+    translationMode: 'ask_first',
+    explanationDisplayMode: 'text',
+    explanationVoiceIdentifiers: {},
+    voiceGender: 'weiblich',
+    speechRate: 'normal',
+    explanationMode: 'normal',
+    entitlements: {},
+  };
+};
+export function migrateSettings(raw: Partial<Settings> | undefined, deviceLanguage = detectDeviceLanguage()): Settings {
+  const defaults = createDefaultSettings();
+  const languagePreferences = migrateLanguagePreferences(raw, deviceLanguage);
+  return {
+    ...defaults,
+    ...raw,
+    ...languagePreferences,
+    entitlements: raw?.entitlements ?? {},
+    explanationVoiceIdentifiers: Object.fromEntries(Object.entries(raw?.explanationVoiceIdentifiers ?? {}).filter(([language, identifier]) => isExplanationLanguage(language as AppLanguage) && typeof identifier === 'string' && identifier.trim())) as Partial<Record<AppLanguage, string>>,
+  };
+}
+const defaultSecurity: SecuritySettings = { biometricProtection:false, pinEnabled:false, sensitiveDocumentsProtection:false, autoLockMinutes:0, cloudSyncEnabled:false, gmailAccessEnabled:false, aiProcessingEnabled:false, retentionPolicy:'1 Jahr', analyticsEnabled: false, localOnly: true, retentionDays: 365, permissions: { kamera: 'nicht_erfragt', dateien: 'nicht_erfragt', benachrichtigungen: 'nicht_erfragt' } };
+const blankCaseState = { cases: [] as CaseRecord[], relationships: [] as DocumentRelationship[], notifications: [] as NotificationRecord[], activities: [] as ActivityRecord[], exportPackages: [] as ExportPackage[], security: defaultSecurity, onboarding: { completed: false, language: 'Deutsch', privacyAccepted: false } as OnboardingState, family: { enabled: false, members: [], sharedHouseholdDocumentIds: [] } as FamilyWorkspace, business: { enabled: false, members: [], approvalRequired: true, documentOwnership:[], sharedInbox:'Coming Soon',auditLog:'Coming Soon' } as BusinessWorkspace, contracts: [] as ContractMonitor[], recurringCosts: [] as RecurringCost[], compareRecords: [] as import('@/utils/documentDomain').CompareRecord[], demoEnabled: false };
+const AppContext = createContext<AppContextValue | null>(null);
+
+export function AppProvider({ children }: { children: React.ReactNode }) {
+  const [checkIns, setCheckIns] = useState<Record<string, boolean>>({});
+  const [journalEntries, setJournalEntries] = useState<string[]>([]);
+  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const documentsRef = useRef<DocumentRecord[]>([]);
+  const [profiles, setProfiles] = useState<UserProfile[]>(['Ich', 'Partner', 'Kind', 'Haushalt', 'Auto'].map((name) => ({ id: name.toLowerCase(), name, kind: 'default', createdAt: '2025-01-01T00:00:00.000Z' })));
+  const [tasks, setTasks] = useState<DocumentTask[]>([]);
+  const [actions, setActions] = useState<ActionRecord[]>([]);
+  const [reminders, setReminders] = useState<ReminderRecord[]>([]);
+  const [followUps, setFollowUps] = useState<FollowUpRecord[]>([]);
+  const [replyDrafts, setReplyDrafts] = useState<ReplyDraftCandidate[]>([]);
+  const [calendarCandidates, setCalendarCandidates] = useState<CalendarEventCandidate[]>([]);
+  const [automationRules, setAutomationRules] = useState<AutomationRule[]>([]);
+  const [conversations, setConversations] = useState<ConversationRecord[]>([]);
+  const [conversationThreads, setConversationThreads] = useState<Record<string, string>>({});
+  const [explanationStates, setExplanationStates] = useState<StoredState['explanationStates']>({});
+  const [assistantContext, setAssistantContext] = useState<SearchConversationContext>(emptySearchContext);
+  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([]);
+  const [searchHistory, setSearchHistory] = useState<SearchHistoryRecord[]>([]);
+  const [searchIndexRevision, setSearchIndexRevision] = useState(0);
+  const [searchIndexRebuiltAt, setSearchIndexRebuiltAt] = useState<string | undefined>();
+  const [settings, setSettings] = useState<Settings>(createDefaultSettings);
+  const [pendingAsset, setPendingAsset] = useState<PendingAsset | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const [domain, setDomain] = useState(blankCaseState);
+  const [integrations, setIntegrations] = useState<IntegrationState>(createDefaultIntegrationState);
+  const [backup, setBackup] = useState<BackupAppState>(defaultBackupState);
+  const backupCancelled = useRef(false);
+  const automaticBackupPassphrase = useRef<string | undefined>(undefined);
+  const automaticBackupTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const automaticBackupDirty = useRef(false);
+  const appState = useRef(AppState.currentState);
+  const [isForeground, setIsForeground] = useState(AppState.currentState === 'active');
+  const pendingRestore = useRef<RestorePlan<StoredState> | undefined>(undefined);
+  const nativeRecoveryStarted = useRef(false);
+  // AsyncStorage does not guarantee the order of overlapping writes. All
+  // snapshots, including the synchronous scan-save path, pass through this
+  // single queue so an older render can never overwrite a newer document.
+  const persistenceQueue = useRef<Promise<void>>(Promise.resolve());
+  const documentMutationQueue = useRef<Promise<void>>(Promise.resolve());
+  const latestPersistenceState = useRef({
+    checkIns, journalEntries, documents, profiles, tasks, settings, actions, reminders, followUps,
+    replyDrafts, calendarCandidates, automationRules, conversations, conversationThreads,
+    explanationStates, assistantContext, assistantMessages, searchHistory, searchIndexRevision,
+    integrations, backup, domain,
+  });
+  latestPersistenceState.current = {
+    checkIns, journalEntries, documents, profiles, tasks, settings, actions, reminders, followUps,
+    replyDrafts, calendarCandidates, automationRules, conversations, conversationThreads,
+    explanationStates, assistantContext, assistantMessages, searchHistory, searchIndexRevision,
+    integrations, backup, domain,
+  };
+  const enqueuePersistence = useCallback((state: StoredState): Promise<void> => {
+    const snapshot = JSON.stringify(state);
+    const write = persistenceQueue.current.then(() => AsyncStorage.setItem(STORAGE_KEY, snapshot));
+    persistenceQueue.current = write.catch(() => undefined);
+    return write;
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    AsyncStorage.getItem(STORAGE_KEY)
+       .then(async (stored) => {
+        if (!mounted || !stored) return;
+         const parsed = JSON.parse(stored) as Partial<StoredState & { profiles: UserProfile[]; tasks: DocumentTask[]; settings: Settings }>;
+        setCheckIns(parsed.checkIns ?? {});
+        setJournalEntries(parsed.journalEntries ?? []);
+        const loadedProfiles = parsed.profiles ?? profiles;
+           const loadedDocuments = (parsed.documents ?? []).map((d) => {
+            const legacyStatus = d.status as string;
+            const migrated = {
+              ...d,
+              status: (DOCUMENT_STATUSES.includes(legacyStatus as DocumentStatus) ? legacyStatus : legacyStatus === 'Erledigt' ? 'Abgeschlossen' : legacyStatus === 'Offen' ? 'Zu erledigen' : 'Neu') as DocumentStatus,
+              profileIds: migrateProfileIds(d.profileIds, d.person, loadedProfiles),
+              lifecycle: d.lifecycle ?? 'aktiv',
+            };
+            const isCanonicalCloudRecord = Boolean(d.cloudIntelligence?.canonical && ["gemini_flash", "gemini_pro"].includes(d.cloudIntelligence.canonical.provider));
+            const currentIntelligence = isCanonicalCloudRecord
+              ? undefined
+              : isCurrentDocumentIntelligence(d.intelligence)
+              ? d.intelligence
+              : d.ocrText
+                ? analyzeDocumentIntelligence({
+                    text: d.ocrText,
+                    structuredFields: {
+                      ...d.structuredFields,
+                      sender: d.sender,
+                      documentDate: d.documentDate,
+                      dueDate: d.dueDate,
+                      amount: d.amount,
+                      status: d.status,
+                    },
+                  })
+                : undefined;
+              const intelligence = isCanonicalCloudRecord ? undefined : currentIntelligence
+              ? applyReviewDecisions(currentIntelligence, d.intelligenceReviewDecisions ?? {})
+              : undefined;
+              return migrateArchiveDocument({ ...migrated, intelligence, fingerprint: d.fingerprint ?? documentFingerprint(migrated), assetState: 'not_present' as DocumentAssetState });
+           });
+          const validatedDocuments = await Promise.all(loadedDocuments.map(async (document) => ({
+            ...document,
+            assetState: await validateDocumentAssets(document),
+          })));
+          documentsRef.current = validatedDocuments;
+          setDocuments(validatedDocuments);
+          void Promise.all(validatedDocuments.map(async document => {
+            if (!document.cloudIntelligence?.canonical?.documentId) return document;
+            try {
+              const canonical = await loadCanonicalDocument(document.id);
+              return {
+                ...document,
+                title: canonical.title ?? document.title,
+                sender: canonical.sender ?? '',
+                category: canonical.category ?? canonical.family,
+                subcategory: canonical.subcategory ?? '',
+                documentType: canonical.type ?? document.documentType,
+                documentDate: canonical.documentDate ?? '',
+                dueDate: canonical.dueDates[0]?.value,
+                amount: primaryCanonicalAmount(canonical.amounts)?.literal,
+                person: canonical.recipient ?? document.person,
+                intelligence: undefined,
+                cloudIntelligence: cloudIntelligenceFromCanonical(canonical),
+              };
+            } catch { return document; }
+          })).then(refreshed => {
+            documentsRef.current = refreshed;
+            setDocuments(refreshed);
+          });
+         const migratedActionEngine = migrateActionEngineState(parsed.actionEngine);
+          setActions(mergeDerivedActions(migratedActionEngine.actions, validatedDocuments));
+         setReminders(migratedActionEngine.reminders);
+         setFollowUps(migratedActionEngine.followUps);
+         setReplyDrafts(migratedActionEngine.replyDrafts);
+         setCalendarCandidates(migratedActionEngine.calendarCandidates);
+         setAutomationRules(migratedActionEngine.automationRules);
+         setConversations(parsed.conversations ?? []);
+         setConversationThreads(parsed.conversationThreads ?? {});
+         setExplanationStates(parsed.explanationStates ?? {});
+         setAssistantContext(parsed.assistantContext ?? emptySearchContext);
+         setAssistantMessages(parsed.assistantMessages ?? []);
+         setSearchHistory(parsed.searchHistory ?? []);
+         setSearchIndexRevision(parsed.searchIndexVersion === SEARCH_INDEX_VERSION ? (parsed.searchIndexRevision ?? 0) : 1);
+         setSearchIndexRebuiltAt(parsed.searchIndexVersion === SEARCH_INDEX_VERSION ? parsed.searchIndexRebuiltAt : new Date().toISOString());
+          setIntegrations(migrateIntegrationState(parsed.integrations));
+          setBackup({ ...defaultBackupState(), ...parsed.backup, accounts: requireCloudAccountRevalidation(parsed.backup?.accounts ?? []), snapshots: parsed.backup?.snapshots ?? [], automatic: { ...defaultBackupState().automatic, ...parsed.backup?.automatic, enabled: false, foregroundOnly: true }, audit: parsed.backup?.audit ?? [] });
+        if (parsed.profiles) setProfiles(loadedProfiles);
+        if (parsed.tasks) setTasks(parsed.tasks);
+        if (parsed.settings) setSettings(migrateSettings(parsed.settings));
+          setDomain({ ...blankCaseState, cases: parsed.cases ?? [], relationships: parsed.relationships ?? [], notifications: parsed.notifications ?? [], activities: parsed.activities ?? [], exportPackages: parsed.exportPackages ?? [], security: disableUnenforcedSecurity({ ...defaultSecurity, ...parsed.security, permissions: { ...defaultSecurity.permissions, ...parsed.security?.permissions } }), onboarding: parsed.onboarding ?? { ...blankCaseState.onboarding, completed: true }, family: parsed.family ?? blankCaseState.family, business: parsed.business ?? blankCaseState.business, contracts: parsed.contracts ?? [], recurringCosts: parsed.recurringCosts ?? [], demoEnabled: false });
+         setDomain(current=>({...current,compareRecords:parsed.compareRecords??[]}));
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (mounted) setHydrated(true);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated || nativeRecoveryStarted.current) return;
+    nativeRecoveryStarted.current = true;
+    const items = integrations.notificationInstances
+      .filter((item) => item.status === 'scheduled')
+      .map((item) => ({ id: item.id, title: item.title, body: item.body, scheduledFor: item.scheduledFor, target: item.documentId ? `/document/${item.documentId}` : item.actionId ? `/action/${item.actionId}` : '/notifications' }));
+    void recoverLocalNotifications(items).then(() => setIntegrations((current) => ({ ...current, lastNativeRecoveryAt: new Date().toISOString() })));
+  }, [hydrated, integrations.notificationInstances]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+     const actionEngine: ActionEngineState = { schemaVersion: ACTION_ENGINE_SCHEMA_VERSION, actions, reminders, followUps, replyDrafts, calendarCandidates, automationRules };
+       const state: StoredState = { version: CURRENT_VERSION, checkIns, journalEntries, documents, profiles, tasks, settings, actionEngine, conversations, conversationThreads, explanationStates, assistantContext, assistantMessages, searchHistory, searchIndexVersion: SEARCH_INDEX_VERSION, searchIndexRevision, searchIndexRebuiltAt, integrations, backup, ...domain };
+    void enqueuePersistence(state).catch(() => undefined);
+    }, [checkIns, journalEntries, documents, profiles, tasks, settings, domain, integrations, backup, hydrated, actions, reminders, followUps, replyDrafts, calendarCandidates, automationRules, conversations, conversationThreads, explanationStates, assistantContext, assistantMessages, searchHistory, searchIndexRevision, searchIndexRebuiltAt, enqueuePersistence]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const contextFor = (action: ActionRecord) => ({ documentType: documents.find((item) => item.id === action.documentId)?.documentType, profileId: action.profileId });
+    const ruleReminderActions = actionsMatchingAutomation(automationRules, actions, 'create_reminder', contextFor);
+    const ruleFollowUpActions = actionsMatchingAutomation(automationRules, actions, 'suggest_follow_up', contextFor);
+    const ruleReplyActions = actionsMatchingAutomation(automationRules, actions, 'create_reply_draft_candidate', contextFor);
+    const ruleCalendarActions = actionsMatchingAutomation(automationRules, actions, 'create_calendar_candidate', contextFor);
+    const generatedReminders = ruleReminderActions.map((action) => createReminderCandidate(action)).filter((item): item is ReminderRecord => !!item);
+    const generatedFollowUps = ruleFollowUpActions.map((action) => createFollowUpCandidate(action)).filter((item): item is FollowUpRecord => !!item);
+    const generatedReplyDrafts = ruleReplyActions.map((action) => {
+      const document = documents.find((item) => item.id === action.documentId);
+      return document ? createReplyDraftCandidate(action, document) : undefined;
+    }).filter((item): item is ReplyDraftCandidate => !!item);
     const generatedCalendar = ruleCalendarActions.map((action) => {
       const document = documents.find((item) => item.id === action.documentId);
       return document ? createCalendarCandidate({ document, action, caseId: action.caseId }) : undefined;

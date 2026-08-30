@@ -14,6 +14,7 @@ import {
   deterministicSearchAdapter,
   emptySearchContext,
   isConfirmedAssistantAction,
+  assistantCanonicalFacts,
   nextConversationContext,
   type SearchConversationContext,
   type SearchResponse,
@@ -71,11 +72,12 @@ export default function AssistantScreen() {
       return t('assistant.foundCase', { name: top.title });
     }
     const document = top.document as DocumentRecord | undefined; if (!document) return t('assistant.missingInformation');
+    const canonicalFacts = assistantCanonicalFacts(document);
     const questionIntent = classifyQuestionIntent(result.query);
     // Search index entries are canonical persisted documents. Do not recreate
     // intelligence here: a missing persisted result must remain unknown rather
     // than producing an assistant-only synthetic interpretation.
-    const groundedIntelligence = document.intelligence;
+    const groundedIntelligence = document.cloudIntelligence?.canonical ? undefined : document.intelligence;
     if (groundedIntelligence && questionIntent !== 'general' && isExplanationAdapterLanguage(settings.explanationLanguage)) {
       const corrected = {
         sender: document.sender,
@@ -96,20 +98,21 @@ export default function AssistantScreen() {
     const asksAction = result.intent === 'next_action' || result.intent === 'find_document_by_action' || /(mit kell|válaszol|teendő|next step|action)/i.test(result.query);
     const lines = [t('assistant.foundDocument', { name: document.title })];
     if (result.intent === 'summarize_document' || result.intent === 'explain_document') {
-      if (document.intelligence && isExplanationLanguage(settings.explanationLanguage)) lines.push(explanationFor(document.intelligence, settings.explanationLanguage, settings.explanationMode === 'kurz' ? 'short' : settings.explanationMode === 'detailliert' ? 'detailed' : 'normal'));
+      if (canonicalFacts.summary) lines.push(canonicalFacts.summary);
+      else if (document.intelligence && isExplanationLanguage(settings.explanationLanguage)) lines.push(explanationFor(document.intelligence, settings.explanationLanguage, settings.explanationMode === 'kurz' ? 'short' : settings.explanationMode === 'detailliert' ? 'detailed' : 'normal'));
       else lines.push(t('assistant.missingInformation'));
     }
     if (asksAmount) {
-      const amount = document.intelligence && isMainAmountEligible(document.intelligence) ? document.intelligence.amounts.main.value : undefined;
+      const amount = canonicalFacts.amount ?? (document.intelligence && isMainAmountEligible(document.intelligence) ? document.intelligence.amounts.main.value : undefined);
       lines.push(amount ? `${t('document.amount')}: ${currency(amount)}` : t('assistant.missingInformation'));
     }
     if (asksDeadline) {
-      const deadline = document.intelligence ? eligibleDeadlines(document.intelligence)[0]?.value : undefined;
+      const deadline = canonicalFacts.deadline ?? (document.intelligence ? eligibleDeadlines(document.intelligence)[0]?.value : undefined);
       lines.push(deadline ? t('assistant.confirmedDeadline', { value: date(deadline) }) : t('assistant.noConfirmedDeadline'));
     }
     if (asksAction) {
       const action = activeActions.find(item => item.documentId === document.id && isConfirmedAssistantAction(item));
-      lines.push(action ? t('assistant.confirmedAction', { value: action.title }) : t('assistant.noConfirmedAction'));
+      lines.push(canonicalFacts.action ? t('assistant.confirmedAction', { value: canonicalFacts.action }) : action ? t('assistant.confirmedAction', { value: action.title }) : t('assistant.noConfirmedAction'));
     }
     return lines.join('\n');
   };

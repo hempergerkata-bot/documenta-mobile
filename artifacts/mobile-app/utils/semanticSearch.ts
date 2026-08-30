@@ -1,5 +1,6 @@
 import type { DocumentIntelligenceResult } from './documentIntelligence';
 import { SUPPORTED_LANGUAGES, t, type TranslationKey } from './localization';
+import { primaryCanonicalAmount } from './canonicalDocument';
 
 export type SearchIntent =
   | 'find_document' | 'find_case' | 'find_document_by_topic' | 'find_document_by_sender'
@@ -30,6 +31,7 @@ export type SearchDocument = Readonly<{
   tags?: readonly string[]; note?: string; ocrText?: string; lifecycle?: string; archiveYear?: number;
   caseOriginYear?: number; relevantPeriodStart?: string; relevantPeriodEnd?: string;
   intelligence?: DocumentIntelligenceResult; intelligenceReviewDecisions?: Readonly<Record<string, string>>;
+  cloudIntelligence?: { canonical?: { summary: string | null; mainContent: string | null; actions: string[]; dueDates: Array<{ value: string }>; amounts: Array<{ literal: string }>; references: Array<{ value: string }>; sender: string | null; recipient: string | null } };
 }>;
 export type SearchProfile = Readonly<{ id: string; name: string }>;
 export type SearchCase = Readonly<{ id: string; title: string; documentIds: readonly string[]; profileIds?: readonly string[]; status?: string; dueDate?: string }>;
@@ -37,6 +39,7 @@ export type SearchRelationship = Readonly<{ fromDocumentId: string; toDocumentId
 export type SearchAction = Readonly<{ id: string; documentId?: string; title: string; status?: string; dueDate?: string; confidence?: string; userConfirmed?: boolean }>;
 export type SearchLibrary = Readonly<{ documents: readonly SearchDocument[]; profiles?: readonly SearchProfile[]; cases?: readonly SearchCase[]; relationships?: readonly SearchRelationship[]; actions?: readonly SearchAction[] }>;
 export type SearchIndexEntry = Readonly<{ id: string; document: SearchDocument; searchableText: string; concepts: readonly string[]; profileNames: readonly string[]; caseIds: readonly string[]; hasEvidence: boolean }>;
+export type AssistantCanonicalFacts = Readonly<{ summary?: string; amount?: string; deadline?: string; action?: string }>;
 export type SearchQueryOptions = Readonly<{
   referenceDate?: string; includeArchived?: boolean; topK?: number; scope?: SearchContextMode;
   documentId?: string; caseId?: string; profileId?: string; year?: number; fromYear?: number; toYear?: number;
@@ -139,11 +142,16 @@ function factText(document: SearchDocument, profiles: readonly SearchProfile[]):
     intelligence?.parties?.sender?.value, intelligence?.parties?.recipient?.value, intelligence?.dates?.documentDate?.value,
     intelligence?.amounts?.main?.value, ...(intelligence?.deadlines?.map(item => item.value) ?? []), ...(intelligence?.actions?.map(item => item.requirement) ?? []),
     intelligence?.case?.summary?.value, intelligence?.plainLanguageExplanation, intelligence?.actionSummary, intelligence?.deadlineSummary,
+    document.cloudIntelligence?.canonical?.summary, document.cloudIntelligence?.canonical?.mainContent,
+    document.cloudIntelligence?.canonical?.sender, document.cloudIntelligence?.canonical?.recipient,
+    ...(document.cloudIntelligence?.canonical?.actions ?? []), ...(document.cloudIntelligence?.canonical?.references?.map(item => item.value) ?? []),
+    ...(document.cloudIntelligence?.canonical?.amounts?.map(item => item.literal) ?? []),
+    ...(document.cloudIntelligence?.canonical?.dueDates?.map(item => item.value) ?? []),
   ];
   return normalize(fields.filter(Boolean).join(' '));
 }
 function dateValues(document: SearchDocument): string[] {
-  return [document.documentDate, document.receivedDate, document.importedAt, document.createdAt, document.dueDate, document.relevantPeriodStart, document.relevantPeriodEnd].filter((value): value is string => Boolean(value));
+  return [document.documentDate, document.receivedDate, document.importedAt, document.createdAt, document.cloudIntelligence?.canonical?.dueDates[0]?.value, document.dueDate, document.relevantPeriodStart, document.relevantPeriodEnd].filter((value): value is string => Boolean(value));
 }
 function yearIn(value: string | undefined, year: number): boolean { return Boolean(value && new RegExp(`(?:^|[^0-9])${year}(?:[^0-9]|$)`).test(value)); }
 function parsedAmount(value: string): { number: number; currency?: string } | undefined {
@@ -229,6 +237,15 @@ export function buildSearchIndex(library: SearchLibrary): readonly SearchIndexEn
     hasEvidence: Boolean(document.intelligence && (document.intelligence.parties?.sender?.evidence?.length || document.intelligence.taxonomy?.mainCategory?.evidence?.length || document.intelligence.plainLanguageExplanation)),
   })));
 }
+export function assistantCanonicalFacts(document: Pick<SearchDocument, 'cloudIntelligence'>): AssistantCanonicalFacts {
+  const canonical = document.cloudIntelligence?.canonical;
+  return {
+    summary: canonical?.summary ?? canonical?.mainContent ?? undefined,
+    amount: canonical ? primaryCanonicalAmount(canonical.amounts)?.literal : undefined,
+    deadline: canonical?.dueDates[0]?.value,
+    action: canonical?.actions[0],
+  };
+}
 function dateWithin(dateValuesToCheck: readonly string[], from?: string, to?: string): boolean {
   if (!from || !to) return false; return dateValuesToCheck.some(value => { const date = canonicalSearchDate(value); return Boolean(date && date >= from && date <= to); });
 }
@@ -268,9 +285,15 @@ export function searchLocal(library: SearchLibrary, query: string, options: Sear
   const documentResults = index.filter(entry => matchesScope(entry, scoped, library)).map(entry => {
     const document = entry.document; let score = 0; const fields: string[] = []; const signals: string[] = [];
     const searchableTokens = tokenize(entry.searchableText);
+      const canonical = document.cloudIntelligence?.canonical;
     const fieldValues: Array<[string, string | undefined, number]> = [
       ['title', document.title, 4], ['sender', document.sender, 5], ['recipient', document.recipient, 4], ['person', document.person, 5],
       ['category', `${document.category} ${document.subcategory} ${document.documentType}`, 3], ['ocr', document.ocrText, 2], ['case', undefined, 3],
+        ['canonical', [
+          canonical?.summary, canonical?.mainContent, canonical?.sender, canonical?.recipient,
+          ...(canonical?.actions ?? []), ...(canonical?.references?.map(item => item.value) ?? []),
+          ...(canonical?.amounts?.map(item => item.literal) ?? []), ...(canonical?.dueDates?.map(item => item.value) ?? []),
+        ].filter(Boolean).join(' '), 5],
     ];
     fieldValues.forEach(([field, value, weight]) => {
       const tokens = tokenize(value ?? ''); const matches = queryTokens.filter(queryToken => tokens.some(token => closeToken(queryToken, token)));
@@ -286,7 +309,7 @@ export function searchLocal(library: SearchLibrary, query: string, options: Sear
     });
     if (years.from !== undefined && years.to !== undefined && dateValues(document).some(value => { const year = Number(value.slice(0, 4)); return year >= years.from! && year <= years.to!; })) { score += 4; fields.push('period'); signals.push('period range match'); }
     if (dateWithin(dateValues(document), dateRange.from, dateRange.to)) { score += 4; fields.push('date'); signals.push('canonical date match'); }
-    if (amount) { const actual = parsedAmount(document.amount ?? document.intelligence?.amounts?.main?.value ?? ''); if (actual && (!amount.currency || actual.currency === amount.currency)) { const difference = Math.abs(actual.number - amount.number); const tolerance = amount.approximate ? Math.max(10, amount.number * 0.1) : 0.009; if (difference <= tolerance) { score += difference < 0.01 ? 6 : 4; fields.push('amount'); signals.push('currency-aware amount match'); } } }
+    if (amount) { const actual = parsedAmount(document.cloudIntelligence?.canonical?.amounts[0]?.literal ?? document.amount ?? document.intelligence?.amounts?.main?.value ?? ''); if (actual && (!amount.currency || actual.currency === amount.currency)) { const difference = Math.abs(actual.number - amount.number); const tolerance = amount.approximate ? Math.max(10, amount.number * 0.1) : 0.009; if (difference <= tolerance) { score += difference < 0.01 ? 6 : 4; fields.push('amount'); signals.push('currency-aware amount match'); } } }
     if (options.context?.documentId === document.id) { score += 5; signals.push('conversation context'); fields.push('context'); }
     if (referenceId === document.id) { score += 6; signals.push('resolved reference'); fields.push('context'); }
     const profileNames = entry.profileNames.map(normalize); if (profiles.some(profile => profileNames.includes(normalize(profile.name)) && normalized.includes(normalize(profile.name)))) { score += 5; fields.push('profile'); signals.push('profile match'); }

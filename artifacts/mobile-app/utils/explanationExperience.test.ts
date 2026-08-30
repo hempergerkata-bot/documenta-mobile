@@ -7,10 +7,11 @@ const assert = require('node:assert').strict;
 const evidence = [{ text: 'Sender: Amt', source: 'ocr' as const, confidence: 'high' as const }];
 const result = {
   parties: { sender: { value: 'Amt', evidence }, recipient: { value: 'Ada', evidence } },
-  dates: { documentDate: { value: '2025-01-01', evidence } }, amounts: { main: { value: '10 EUR', evidence } },
-  deadlines: [{ value: '2025-02-01', evidence }], actions: [{ requirement: 'Reply', evidence }],
+  dates: { documentDate: { value: '2025-01-01', evidence }, references: { value: ['INV-400123'], evidence } }, amounts: { main: { value: '10 EUR', evidence } },
+  identifiers: { value: [{ kind: 'reference', value: 'INV-400123', validation: 'partially_validated', evidence }], evidence },
+  deadlines: [{ value: '2025-02-01', kind: 'payment', source: 'explicit', relative: false, confidence: 'high', evidence }], actions: [{ requirement: 'Reply', evidence }],
   responseNecessary: { value: true, evidence }, reviewRequired: false, reviewReasons: [], reviewRecords: [], deadlineConflicts: [], case: { summary: { value: 'Case A', evidence } },
-  changes: [], taxonomy: { mainCategory: { value: 'health', evidence } }, actionSummary: 'Appointment', plainLanguageExplanation: 'Summary',
+  changes: [], taxonomy: { mainCategory: { value: 'health', evidence }, purpose: { value: 'Insurance decision', evidence } }, actionSummary: 'Appointment', plainLanguageExplanation: 'Summary',
 } as unknown as DocumentIntelligenceResult;
 const before = JSON.stringify(result);
 assert.equal(countryProfile('CH').defaultCurrency, 'CHF');
@@ -21,6 +22,9 @@ assert.equal(deriveTranslationState('de', 'de', 'automatic_when_needed').state, 
 assert.equal(deriveTranslationState('de', 'hu', 'automatic_when_needed').state, 'unavailable', 'cross-language need is recognized without pretending a translator exists');
 assert.equal(deriveTranslationState('de', 'hu', 'off').state, 'disabled');
 assert.equal(answerDocumentQuestion(result, 'sender?', 'en').text, 'According to the document: Sender: Amt');
+assert.equal(answerDocumentQuestion(result, 'invoice number?', 'en').text, 'According to the document: Reference: INV-400123');
+assert.equal(answerDocumentQuestion(result, 'what is the purpose?', 'en').text, 'According to the document: Purpose: Insurance decision');
+assert.equal(answerDocumentQuestion(result, 'payment terms?', 'en').text, 'According to the document: Payment terms: 2025-02-01');
 assert.equal(answerDocumentQuestion(result, 'sender?', 'de', { sender: 'Korrigiert' }).text, 'Laut Dokument: Absender: Korrigiert');
 assert.ok(answerDocumentQuestion(result, 'medical?', 'en').safetyNotice);
 assert.ok(answerDocumentQuestion(result, 'amount?', 'en').safetyNotice?.includes('financial'), 'amount answers carry payment verification safety');
