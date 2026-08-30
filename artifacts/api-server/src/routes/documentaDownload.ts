@@ -7,10 +7,10 @@ import { Router, type IRouter, type RequestHandler } from "express";
 const router: IRouter = Router();
 
 const apkFileName = "documenta-samsung-arm64-1.0.0.apk";
-const apkSize = 107486490;
-const apkSha256 = "9cf0bd10a4520bf6895fe1706eab71905bc23b2d7aac0a1da749e40e4f42901c";
-const buildId = "a1558c57-6a27-460d-ba3d-2f69c124e1cf";
-const sourceSha = "0c2c07839b4d1a20a15853eb613c6b20fda1d6ce";
+const apkSize = 107531330;
+const apkSha256 = "6d9d2036618d3080d8f6129f7a9f6583f080b1f2e2136cdfca1b64fa91302f50";
+const buildId = "5cc0dfd9-fc4e-47d4-ae40-3c6df596afe0";
+const sourceSha = "edca026f884da4cf2c451b1621324e8337dfa8a3";
 const maxTokenLifetimeMs = 14 * 24 * 60 * 60 * 1000;
 const apkPath = path.resolve(
   process.cwd(),

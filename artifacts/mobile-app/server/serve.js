@@ -12,6 +12,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const STATIC_ROOT = path.resolve(__dirname, '..', 'static-build');
 const TEMPLATE_PATH = path.resolve(__dirname, 'templates', 'landing-page.html');
@@ -21,8 +22,8 @@ const INSTALL_TEMPLATE_PATH = path.resolve(
   'install-page.html',
 );
 const basePath = (process.env.BASE_PATH || '/').replace(/\/+$/, '');
-const CURRENT_APK_URL =
-  'https://expo.dev/artifacts/eas/GYjgBuoORcJLTpzypPUNbZwSrx3nTrM7Sku9UEBd1TY.apk';
+const DOWNLOAD_BUILD_ID = '5cc0dfd9-fc4e-47d4-ae40-3c6df596afe0';
+const DOWNLOAD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -107,10 +108,23 @@ function serveLandingPage(req, res, landingPageTemplate, appName) {
   res.end(html);
 }
 
-function serveInstallPage(res, installPageTemplate) {
+function signedInstallUrl(req) {
+  const secret = process.env.SESSION_SECRET;
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  const protocol = req.headers['x-forwarded-proto'] || 'https';
+  if (!secret || secret.length < 32 || !host) return '';
+  const expiresAt = String(Date.now() + DOWNLOAD_TTL_MS);
+  const signature = crypto
+    .createHmac('sha256', secret)
+    .update(`documenta-apk:${DOWNLOAD_BUILD_ID}:${expiresAt}`)
+    .digest('hex');
+  return `${protocol}://${host}/api/install/documenta?token=${expiresAt}.${signature}`;
+}
+
+function serveInstallPage(req, res, installPageTemplate) {
   const html = installPageTemplate
     .replace(/APP_NAME_PLACEHOLDER/g, escapeHtml('Documenta'))
-    .replace(/APK_URL_ATTRIBUTE_PLACEHOLDER/g, escapeHtml(CURRENT_APK_URL));
+    .replace(/APK_URL_ATTRIBUTE_PLACEHOLDER/g, escapeHtml(signedInstallUrl(req)));
 
   res.writeHead(200, {
     'content-type': 'text/html; charset=utf-8',
@@ -171,7 +185,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname === '/install' || pathname === '/install/') {
-    return serveInstallPage(res, installPageTemplate);
+    return serveInstallPage(req, res, installPageTemplate);
   }
 
   serveStaticFile(pathname, res);
