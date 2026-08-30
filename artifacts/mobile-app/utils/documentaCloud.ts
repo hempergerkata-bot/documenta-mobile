@@ -1,14 +1,16 @@
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import { Buffer } from 'buffer';
 import { File } from 'expo-file-system';
 export type { CloudEvidence, CloudFact, CloudIntelligence, CloudOcrPage, CloudOcrResult, CloudPipelineFailure, CloudPipelineFailureReason, CloudPipelineStageState, ScanCloudPipelineResult, ScanCloudPipelineState } from './documentaCloudMapping';
 import { mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline as runPipeline, type CloudIntelligence, type CloudOcrResult } from './documentaCloudMapping';
 export { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudOcrChunks, normalizeCloudFields, parseCloudOcrResponse, planCloudOcrChunks, runScanCloudPipeline } from './documentaCloudMapping';
 
-const INSTALLATION_KEY = '@documenta/cloud-installation-id';
-const SESSION_KEY = '@documenta/cloud-session';
+// expo-secure-store permits only alphanumeric characters, ".", "-", and "_".
+const INSTALLATION_KEY = 'documenta.cloud-installation-id';
+const SESSION_KEY = 'documenta.cloud-session';
 const CONSENT_KEY = '@documenta/cloud-consent-v1';
 const REQUEST_TIMEOUT_MS = 45_000;
 const normalizeApiOrigin = (value: string | undefined) => {
@@ -27,6 +29,7 @@ const timedFetch = (url: string, init?: RequestInit) => fetch(url, { ...init, si
 
 export type CloudState = 'offline' | 'cloud' | 'unavailable' | 'quota';
 type StoredSession = { accessToken: string; expiresAt: string };
+let webSession: StoredSession | undefined;
 
 export class DocumentaCloudError extends Error {
   constructor(public readonly state: Exclude<CloudState, 'offline' | 'cloud'>, message: string) {
@@ -66,17 +69,25 @@ export async function checkCloudProviderStatus(): Promise<CloudProviderStatus> {
 }
 
 async function installationId(): Promise<string> {
-  const existing = await SecureStore.getItemAsync(INSTALLATION_KEY);
+  const existing = Platform.OS === 'web'
+    ? await AsyncStorage.getItem(INSTALLATION_KEY)
+    : await SecureStore.getItemAsync(INSTALLATION_KEY);
   if (existing) return existing;
   const created = Crypto.randomUUID();
-  await SecureStore.setItemAsync(INSTALLATION_KEY, created, {
-    keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-  });
+  if (Platform.OS === 'web') {
+    await AsyncStorage.setItem(INSTALLATION_KEY, created);
+  } else {
+    await SecureStore.setItemAsync(INSTALLATION_KEY, created, {
+      keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+    });
+  }
   return created;
 }
 
 async function sessionToken(): Promise<string> {
-  const raw = await SecureStore.getItemAsync(SESSION_KEY);
+  const raw = Platform.OS === 'web'
+    ? webSession && JSON.stringify(webSession)
+    : await SecureStore.getItemAsync(SESSION_KEY);
   if (raw) {
     try {
       const cached = JSON.parse(raw) as StoredSession;
@@ -98,9 +109,13 @@ async function sessionToken(): Promise<string> {
     throw new DocumentaCloudError(response.status === 429 ? 'quota' : 'unavailable', body.message || 'Cloud service is unavailable.');
   }
   const session = { accessToken: body.accessToken, expiresAt: body.expiresAt };
-  await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(session), {
-    keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-  });
+  if (Platform.OS === 'web') {
+    webSession = session;
+  } else {
+    await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(session), {
+      keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+    });
+  }
   return session.accessToken;
 }
 
