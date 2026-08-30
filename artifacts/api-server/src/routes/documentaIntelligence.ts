@@ -14,6 +14,7 @@ const MAX_PAGES_PER_BATCH = 50;
 const DOCUMENT_AI_EUR_PER_PAGE_ESTIMATE = 0.015;
 const GEMINI_FLASH_EUR_PER_1K_TOKENS_ESTIMATE = 0.0001;
 const GEMINI_PRO_EUR_PER_1K_TOKENS_ESTIMATE = 0.001;
+const ANONYMOUS_INSTALLATIONS_PER_IP_PER_DAY = 25;
 const DAILY_REQUEST_LIMIT = 30;
 const MONTHLY_REQUEST_LIMIT = 400;
 // Hard platform ceilings cap anonymous UUID/IP rotation. At the conservative
@@ -278,7 +279,7 @@ router.post("/documenta/auth/session", async (request, response) => {
         tx.select({ count: sql<number>`count(*)` }).from(documentaSessionIssuance).where(and(eq(documentaSessionIssuance.ipHash, ipHash), eq(documentaSessionIssuance.installationHash, installationHash), gte(documentaSessionIssuance.issuedAt, dayAgo))),
         tx.select({ count: sql<number>`count(*)` }).from(documentaSessionIssuance).where(and(eq(documentaSessionIssuance.installationHash, installationHash), gte(documentaSessionIssuance.issuedAt, hourAgo))),
       ]);
-      if ((Number(knownInstall.count) === 0 && Number(ipDaily.count) >= 5) || Number(installHourly.count) >= 3) return false;
+      if ((Number(knownInstall.count) === 0 && Number(ipDaily.count) >= ANONYMOUS_INSTALLATIONS_PER_IP_PER_DAY) || Number(installHourly.count) >= 3) return false;
       await tx.insert(documentaSessionIssuance).values({ ipHash, installationHash, expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000) });
       // No raw installation ID, IP, token, or secret is included in audit metadata.
       await tx.insert(documentaAuditEvents).values({ userId, eventType: "installation_session_minted", metadata: { lifetimeSeconds: SESSION_LIFETIME_SECONDS } });

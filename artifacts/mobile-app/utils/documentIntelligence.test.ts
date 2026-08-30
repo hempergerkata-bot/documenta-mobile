@@ -49,6 +49,30 @@ zahlbar sofort ohne Abzug`;
   assert.match(text, /zahlbar sofort ohne Abzug/);
 });
 
+test('parses physical Rosenhof OCR layout without synthetic sender labels', () => {
+  const text = `Rosenhof Schultheis e.K.
+Katalin Hemperger
+Musterstraße 7
+12345 Berlin
+Rechnung
+Rechnungsnummer 400123
+Kundennummer 1276556
+Rechnungsdatum 14.07.2026
+Gesamtbetrag 32,80 EUR
+IBAN DE89 3704 0044 0532 0130 00
+BIC COBADEFFXXX
+Verwendungszweck 400123 / 1276556
+zahlbar sofort ohne Abzug`;
+  const result = analyzeDocumentIntelligence({ text, structuredFields: { sender: 'Rosenhof Schultheis e.K.', person: 'Katalin Hemperger', iban: 'DE89 3704 0044 0532 0130 00', bic: 'COBADEFFXXX' } });
+  assert.equal(result.parties.sender.value, 'Rosenhof Schultheis e.K.');
+  assert.equal(result.parties.recipient.value, 'Katalin Hemperger');
+  assert.equal(result.dates.documentDate.value, '2026-07-14');
+  assert.equal(result.amounts.main.value, '32,80 EUR');
+  assert.ok(result.identifiers.value?.some((item) => item.kind === 'iban' && item.value === 'DE89 3704 0044 0532 0130 00'));
+  assert.ok(result.identifiers.value?.some((item) => item.kind === 'bic' && item.value === 'COBADEFFXXX'));
+  assert.ok(result.actions.some((item) => /zahlbar sofort/i.test(item.requirement)));
+});
+
 test('classifies all Hungarian taxonomy groups independently of UI language', () => {
   const fixtures: Array<[string, string]> = [
     ['Számla fizetendő', 'finance'],

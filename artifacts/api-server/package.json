@@ -9,7 +9,7 @@
     "mint:documenta-url": "node ./scripts/mint-documenta-url.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:documenta": "rm -rf /tmp/documenta-tests && esbuild src/lib/documentaFields.test.ts src/lib/documentaProviderErrors.test.ts src/routes/documentaBatchResume.test.ts src/routes/documentaGeminiRetries.test.ts src/routes/documentaAnonymousCapacity.test.ts --bundle --platform=node --format=esm --outdir=/tmp/documenta-tests --out-extension:.js=.mjs && for file in /tmp/documenta-tests/lib/*.test.mjs /tmp/documenta-tests/routes/*.test.mjs; do node --test \"$file\" || exit 1; done"
+    "test:documenta": "rm -rf /tmp/documenta-tests && esbuild src/lib/documentaFields.test.ts src/lib/documentaInvoiceFields.test.ts src/lib/documentaProviderErrors.test.ts src/routes/documentaBatchResume.test.ts src/routes/documentaGeminiRetries.test.ts src/routes/documentaAnonymousCapacity.test.ts --bundle --platform=node --format=esm --outdir=/tmp/documenta-tests --out-extension:.js=.mjs && for file in /tmp/documenta-tests/lib/*.test.mjs /tmp/documenta-tests/routes/*.test.mjs; do node --test \"$file\" || exit 1; done"
   },
   "dependencies": {
     "@workspace/api-zod": "workspace:*",

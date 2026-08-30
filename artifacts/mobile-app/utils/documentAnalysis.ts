@@ -17,6 +17,7 @@ export type DocumentAnalysisField =
   | 'contractNumber'
   | 'insuranceNumber'
   | 'iban'
+  | 'bic'
   | 'taxNumber'
   | 'patientNumber'
   | 'schoolReference'
@@ -579,6 +580,21 @@ export function analyzeGermanDocumentText(rawText: string): DocumentAnalysisResu
   }
 
   Object.assign(fields, findProfileFields(lines, detected?.rule));
+  const labelledReference = findLabelValue(lines, ['Zahlungsreferenz', 'Verwendungszweck', 'Referenz', 'Kundennummer', 'Kunden-Nr\\.?']);
+  if (labelledReference) {
+    const value = cleanStructuredValue(labelledReference.value);
+    if (value) fields.referenceNumber = suggestion(value, 'high', labelledReference.evidence);
+  }
+  const labelledIban = findLabelValue(lines, ['IBAN']);
+  if (labelledIban) {
+    const value = labelledIban.value.match(/[A-Z]{2}\s*\d{2}(?:\s*[A-Z0-9]){11,30}/i)?.[0]?.replace(/\s+/g, ' ').trim();
+    if (value) fields.iban = suggestion(value, 'high', labelledIban.evidence);
+  }
+  const labelledBic = findLabelValue(lines, ['BIC', 'SWIFT', 'BIC\\/SWIFT']);
+  if (labelledBic) {
+    const value = labelledBic.value.match(/[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?/i)?.[0]?.toUpperCase();
+    if (value) fields.bic = suggestion(value, 'high', labelledBic.evidence);
+  }
 
   const payrollPeriod =
     isPayroll

@@ -1,5 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Buffer } from 'buffer';
 import { File } from 'expo-file-system';
 export type { CloudEvidence, CloudFact, CloudIntelligence, CloudOcrPage, CloudOcrResult, CloudPipelineFailure, CloudPipelineFailureReason, CloudPipelineStageState, ScanCloudPipelineResult, ScanCloudPipelineState } from './documentaCloudMapping';
@@ -8,7 +9,21 @@ export { cloudReviewSuggestions, mergeCloudEvidence, mergeCloudOcrChunks, normal
 
 const INSTALLATION_KEY = '@documenta/cloud-installation-id';
 const SESSION_KEY = '@documenta/cloud-session';
-const baseUrl = () => `https://${process.env.EXPO_PUBLIC_DOMAIN ?? ''}`;
+const CONSENT_KEY = '@documenta/cloud-consent-v1';
+const REQUEST_TIMEOUT_MS = 45_000;
+const normalizeApiOrigin = (value: string | undefined) => {
+  const candidate = value?.trim();
+  if (!candidate) throw new DocumentaCloudError('unavailable', 'Cloud API origin is not configured in this build.');
+  const withProtocol = /^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`;
+  let parsed: URL;
+  try { parsed = new URL(withProtocol); } catch { throw new DocumentaCloudError('unavailable', 'Cloud API origin is invalid.'); }
+  if (parsed.protocol !== 'https:' || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    throw new DocumentaCloudError('unavailable', 'Cloud API origin must be an HTTPS origin without a path.');
+  }
+  return parsed.origin;
+};
+export const documentaApiOrigin = () => normalizeApiOrigin(process.env.EXPO_PUBLIC_API_ORIGIN || process.env.EXPO_PUBLIC_DOMAIN);
+const timedFetch = (url: string, init?: RequestInit) => fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 
 export type CloudState = 'offline' | 'cloud' | 'unavailable' | 'quota';
 type StoredSession = { accessToken: string; expiresAt: string };
@@ -16,6 +31,37 @@ type StoredSession = { accessToken: string; expiresAt: string };
 export class DocumentaCloudError extends Error {
   constructor(public readonly state: Exclude<CloudState, 'offline' | 'cloud'>, message: string) {
     super(message);
+  }
+}
+
+export async function loadCloudConsent(): Promise<boolean> {
+  return (await AsyncStorage.getItem(CONSENT_KEY)) === 'granted';
+}
+
+export async function persistCloudConsent(granted: boolean): Promise<void> {
+  await AsyncStorage.setItem(CONSENT_KEY, granted ? 'granted' : 'denied');
+}
+
+export type CloudProviderStatus = {
+  reachable: boolean;
+  documentAi: 'CONFIGURED' | 'NOT_CONFIGURED';
+  gemini: 'CONFIGURED' | 'NOT_CONFIGURED';
+};
+
+export async function checkCloudProviderStatus(): Promise<CloudProviderStatus> {
+  const token = await sessionToken();
+  try {
+    const response = await timedFetch(`${documentaApiOrigin()}/api/documenta/cloud-status`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = await response.json().catch(() => ({})) as { documentAi?: unknown; gemini?: unknown; message?: string };
+    if (!response.ok || !['CONFIGURED', 'NOT_CONFIGURED'].includes(String(body.documentAi)) || !['CONFIGURED', 'NOT_CONFIGURED'].includes(String(body.gemini))) {
+      throw new DocumentaCloudError(response.status === 429 ? 'quota' : 'unavailable', body.message || 'Cloud status is unavailable.');
+    }
+    return { reachable: true, documentAi: body.documentAi as CloudProviderStatus['documentAi'], gemini: body.gemini as CloudProviderStatus['gemini'] };
+  } catch (error) {
+    if (error instanceof DocumentaCloudError) throw error;
+    throw new DocumentaCloudError('unavailable', 'Cloud service is unreachable from this build.');
   }
 }
 
@@ -40,7 +86,7 @@ async function sessionToken(): Promise<string> {
   }
   let response: Response;
   try {
-    response = await fetch(`${baseUrl()}/api/documenta/auth/session`, {
+    response = await timedFetch(`${documentaApiOrigin()}/api/documenta/auth/session`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ installationId: await installationId() }),
     });
@@ -63,7 +109,7 @@ export async function processCloudIntelligence(ocrText: string, title: string): 
   const token = await sessionToken();
   let response: Response;
   try {
-    response = await fetch(`${baseUrl()}/api/documenta/documents/process`, {
+    response = await timedFetch(`${documentaApiOrigin()}/api/documenta/documents/process`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ ocrText, title, cloudOptIn: true }),
@@ -121,7 +167,7 @@ export async function uploadCloudOcrPages(pageUris: string[]): Promise<CloudOcrR
   for (const chunk of planCloudOcrChunks(pages, 5)) {
     let response: Response;
     try {
-      response = await fetch(`${baseUrl()}/api/documenta/cloud-ocr`, {
+      response = await timedFetch(`${documentaApiOrigin()}/api/documenta/cloud-ocr`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ pages: chunk, cloudOptIn: true }),

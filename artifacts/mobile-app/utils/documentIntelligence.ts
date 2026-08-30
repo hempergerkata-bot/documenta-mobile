@@ -25,7 +25,7 @@ export const DOCUMENT_FAMILIES = [
   'identity', 'family', 'correspondence',
 ] as const;
 export type DocumentFamily = typeof DOCUMENT_FAMILIES[number];
-export type ValidatedIdentifier = { kind: 'iban' | 'reference' | 'tax' | 'patient' | 'unknown'; value: string; validation: ValidationState; evidence: Evidence[] };
+export type ValidatedIdentifier = { kind: 'iban' | 'bic' | 'reference' | 'tax' | 'patient' | 'unknown'; value: string; validation: ValidationState; evidence: Evidence[] };
 export type IntelligenceInput = {
   text: string;
   structuredFields?: StructuredFields;
@@ -136,7 +136,7 @@ const de: Adapter = {
     [/\b(?:telefon|mobilfunk|internet|telekom)\b/i, 'telecom', 'telecom_document', 'service'], [/\b(?:bahn|flug|fahrkarte|verkehr)\b/i, 'transport', 'transport_document', 'transport'],
     [/\b(?:familie|kind|unterhalt|eltern)\b/i, 'family', 'family_document', 'information'], [/\b(?:brief|mitteilung|korrespondenz)\b/i, 'correspondence', 'letter', 'information'],
   ],
-  labels: { sender: /\b(?:absender|von|firma)\s*[:\-]\s*(.+)/i, recipient: /\b(?:empfänger|an)\s*[:\-]\s*(.+)/i, department: /\b(?:abteilung|fachbereich)\s*[:\-]\s*(.+)/i, contact: /\b(?:kontakt|ansprechpartner|telefon|e-mail)\s*[:\-]\s*(.+)/i, documentDate: /\b(?:rechnungsdatum|ausstellungsdatum|abrechnungsdatum|dokumentdatum|datum)\s*[:\-]\s*((?:\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2}|\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4}))/i, reference: /\b(?:aktenzeichen|geschäftszeichen|referenz(?:nummer)?|rechnungsnummer)\s*[:#\-]?\s*([A-Z0-9./-]{3,})/gi },
+  labels: { sender: /\b(?:absender|von|firma)\s*[:\-]\s*(.+)/i, recipient: /\b(?:empfänger|an)\s*[:\-]\s*(.+)/i, department: /\b(?:abteilung|fachbereich)\s*[:\-]\s*(.+)/i, contact: /\b(?:kontakt|ansprechpartner|telefon|e-mail)\s*[:\-]\s*(.+)/i, documentDate: /\b(?:rechnungsdatum|ausstellungsdatum|abrechnungsdatum|dokumentdatum|datum)\s*[:\-]?\s*((?:\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2}|\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4}))/i, reference: /\b(?:aktenzeichen|geschäftszeichen|referenz(?:nummer)?|zahlungsreferenz|verwendungszweck|rechnungsnummer)\s*[:#\-]?\s*([A-Z0-9./ -]{3,})/gi },
 };
 const hu: Adapter = {
   language: 'hu',
@@ -247,8 +247,13 @@ function extractIdentifiers(text: string, input: IntelligenceInput, references: 
   if (typeof suppliedIban === 'string' && suppliedIban.trim()) {
     push('iban', suppliedIban.replace(/\s+/g, ' ').trim(), [ev(`iban: ${suppliedIban}`, 'structured', 'high')], validateIban(suppliedIban));
   }
-  for (const match of text.matchAll(/\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b/gi)) {
+  for (const match of text.matchAll(/\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]){11,30}?(?=\s*(?:BIC|SWIFT|$|\n))/gi)) {
     push('iban', match[0].replace(/\s+/g, ' '), [ev(match[0], 'ocr', 'medium', text)], validateIban(match[0]));
+  }
+  const suppliedBic = input.structuredFields?.bic;
+  if (typeof suppliedBic === 'string' && suppliedBic.trim()) push('bic', suppliedBic.trim(), [ev(`bic: ${suppliedBic}`, 'structured', 'high')], /^[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?$/i.test(suppliedBic.trim()) ? 'valid' : 'invalid');
+  for (const match of text.matchAll(/\b(?:BIC|SWIFT)(?:\/BIC)?\s*[:#-]?\s*([A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b/gi)) {
+    push('bic', match[1].toUpperCase(), [ev(match[0], 'ocr', 'medium', text)], 'valid');
   }
   (references.value ?? []).forEach(value => push('reference', value, references.evidence.filter(e => e.text.includes(value)), validateDocumentIdentifier(value)));
   for (const key of ['taxNumber', 'patientNumber', 'insuranceNumber', 'customerNumber'] as const) {
@@ -336,7 +341,7 @@ function findDeadlineConflicts(deadlines: TypedDeadline[]): DeadlineConflict[] {
 }
 function extractObligations(text: string, deadlines: TypedDeadline[]) {
   const sourceLines = linesOf(text);
-  const requirementLines = sourceLines.filter(x => /\b(?:please|must|submit|send|pay|bitte|müssen|reichen sie|zahlen sie|küldje|fizesse|köteles)\b/i.test(x)).slice(0, 6);
+  const requirementLines = sourceLines.filter(x => /\b(?:please|must|submit|send|pay|bitte|müssen|reichen sie|zahlen sie|küldje|fizesse|köteles|zahlbar|zu zahlen|überweisen|verwendungszweck)\b/i.test(x)).slice(0, 6);
   const actions = requirementLines.map(line => ({ requirement: line, priority: /(?:sofort|unverzüglich|immediately|haladéktalanul)/i.test(line) ? 'high' as const : deadlines.length ? 'medium' as const : 'low' as const, deadlineIndex: deadlines.length ? 0 : undefined, responseNecessary: /(?:antwort|submit|send|bitte|reichen|küldje|válasz)/i.test(line), evidence: [ev(line, 'ocr', 'medium')] }));
   const missing = sourceLines.filter(x => /\b(?:fehlend|beifügen|nachreichen|missing|csatolja|hiányzó)\b/i.test(x)).slice(0, 5).map(line => ({ requirement: line, type: /unterschrift|aláírás/i.test(line) ? 'signature' as const : /nachweis|igazolás/i.test(line) ? 'proof' as const : /dokument|unterlage|irat/i.test(line) ? 'document' as const : 'data' as const, evidence: [ev(line, 'ocr', 'medium')] }));
   return { actions, missing };
@@ -626,7 +631,7 @@ export function analyzeDocumentIntelligence(input: IntelligenceInput): DocumentI
     sender: valueFrom(input, 'sender', adapter?.labels.sender),
     senderDepartment: valueFrom(input, 'senderDepartment', adapter?.labels.department),
     senderContact: valueFrom(input, 'senderContact', adapter?.labels.contact),
-    recipient: valueFrom(input, 'recipient', adapter?.labels.recipient),
+    recipient: valueFrom(input, input.structuredFields?.recipient ? 'recipient' : 'person', adapter?.labels.recipient),
     affectedPerson: valueFrom(input, 'person'),
   };
   const dates = extractDates(text, input, adapter); dates.references = extractReferences(text, adapter);

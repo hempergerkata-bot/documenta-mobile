@@ -5,7 +5,7 @@ export type CloudFact = { value: string; confidence: number; validationState: st
 export type CloudOcrPage = { pageIndex: number; text: string };
 export type CloudOcrResult = { text: string; pages: CloudOcrPage[] };
 export type CloudIntelligence = { family: string; type: string; summary?: string; confidence: number; validationState?: string; model?: string; fields?: Record<string, CloudFact>; ocrPages?: CloudOcrPage[]; sourceText?: string };
-export type CloudPipelineStageState = 'not_requested' | 'skipped' | 'succeeded' | 'failed';
+export type CloudPipelineStageState = 'not_requested' | 'pending' | 'running' | 'skipped' | 'succeeded' | 'failed';
 export type CloudPipelineFailureReason = 'quota' | 'service_unavailable' | 'no_readable_text' | 'local_ocr_failed' | 'invalid_response';
 export type CloudPipelineFailure = {
   stage: 'local_ocr' | 'document_ai_ocr' | 'gemini';
@@ -21,7 +21,7 @@ export type ScanCloudPipelineState = {
   failures: CloudPipelineFailure[];
   /** First normalized failure, retained as a convenient persisted/UI summary. */
   failureReason?: CloudPipelineFailureReason;
-  finalProvider: 'local_only' | 'document_ai_gemini' | 'local_ocr_gemini' | 'local_unavailable';
+  finalProvider: 'local_only' | 'cloud_processing' | 'document_ai_gemini' | 'local_ocr_gemini' | 'local_unavailable';
   cloudState: 'offline' | 'cloud' | 'unavailable' | 'quota';
 };
 export type ScanCloudPipelineResult = {

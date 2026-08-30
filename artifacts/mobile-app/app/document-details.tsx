@@ -8,7 +8,7 @@ import { DocumentRecord, DocumentStatus, DOCUMENT_STATUSES, useApp } from '@/con
 import { useColors } from '@/hooks/useColors';
 import { useTranslation } from '@/hooks/useTranslation';
 import { documentCategoryLabel, documentFieldLabel, documentPlaceholder, documentStatusLabel, documentTypeLabel } from '@/utils/localization';
-import { persistDocumentAsset } from '@/utils/documentFiles';
+import { persistDocumentAssets } from '@/utils/documentFiles';
 import { deletePersistentScannedDocument } from '@/utils/scanPdf';
 import type { DocumentAnalysisField } from '@/utils/documentAnalysis';
 
@@ -34,7 +34,7 @@ const documentTypes = [
   'Nachweis',
 ];
 const statusOptions: DocumentStatus[] = [...DOCUMENT_STATUSES];
-const additionalFieldLabels = ['referenceNumber', 'customerNumber', 'invoiceNumber', 'contractNumber', 'insuranceNumber', 'iban', 'taxNumber', 'patientNumber', 'schoolReference', 'recipient', 'netAmount', 'vatAmount', 'paymentTerms'] as const;
+const additionalFieldLabels = ['referenceNumber', 'customerNumber', 'invoiceNumber', 'contractNumber', 'insuranceNumber', 'iban', 'bic', 'taxNumber', 'patientNumber', 'schoolReference', 'recipient', 'netAmount', 'vatAmount', 'paymentTerms'] as const;
 
 export default function DocumentDetailsScreen() {
   const colors = useColors();
@@ -68,7 +68,7 @@ export default function DocumentDetailsScreen() {
   const [saveError, setSaveError] = useState('');
   const savedRef = useRef(false);
   const duplicateApprovedRef = useRef(false);
-  const analysisAppliedRef = useRef(false);
+  const analysisAppliedRef = useRef('');
   const topInset = Platform.OS === 'web' ? 67 : insets.top;
   const uncertainFields = new Set(pendingAsset?.analysis?.uncertainFields ?? []);
   const unresolvedFields = new Set(pendingAsset?.analysis?.unresolvedFields ?? []);
@@ -105,8 +105,11 @@ export default function DocumentDetailsScreen() {
   }, [pendingAsset]);
 
   useEffect(() => {
-    if (analysisAppliedRef.current || !pendingAsset?.analysis) return;
-    analysisAppliedRef.current = true;
+    if (!pendingAsset?.analysis) return;
+    const revision = `${pendingAsset.documentId ?? pendingAsset.uri}:${pendingAsset.cloudIntelligence?.model ?? 'local'}:${pendingAsset.cloudIntelligence?.sourceText?.length ?? 0}`;
+    if (analysisAppliedRef.current === revision) return;
+    const firstApplication = analysisAppliedRef.current === '';
+    analysisAppliedRef.current = revision;
     const fields = pendingAsset.analysis.fields;
     const cloudSuggestions = cloudReviewSuggestions(pendingAsset.cloudIntelligence, pendingAsset.cloudIntelligence?.sourceText ?? '');
     const stringValue = (field: DocumentAnalysisField) => {
@@ -115,16 +118,18 @@ export default function DocumentDetailsScreen() {
     };
     const localOrCloud = (field: DocumentAnalysisField | 'sender' | 'documentDate' | 'dueDate' | 'amount') =>
       stringValue(field as DocumentAnalysisField) || cloudSuggestions[field]?.value || '';
-    setTitle(stringValue('title'));
-    setSender(localOrCloud('sender'));
-    setCategory(stringValue('category'));
-    setSubcategory(stringValue('subcategory'));
-    setDocumentType(stringValue('documentType'));
-    setDocumentDate(localOrCloud('documentDate'));
-    setPayrollPeriod(stringValue('payrollPeriod'));
-    setDueDate(localOrCloud('dueDate'));
-    setAmount(localOrCloud('amount'));
-    setPerson(stringValue('person'));
+    if (firstApplication) {
+      setTitle(stringValue('title'));
+      setCategory(stringValue('category'));
+      setSubcategory(stringValue('subcategory'));
+      setDocumentType(stringValue('documentType'));
+      setPayrollPeriod(stringValue('payrollPeriod'));
+    }
+    setSender((current) => current || localOrCloud('sender'));
+    setDocumentDate((current) => current || localOrCloud('documentDate'));
+    setDueDate((current) => current || localOrCloud('dueDate'));
+    setAmount((current) => current || localOrCloud('amount'));
+    setPerson((current) => current || stringValue('person') || cloudSuggestions.person?.value || cloudSuggestions.recipient?.value || '');
     const suggestedStatus = stringValue('status');
     if (statusOptions.includes(suggestedStatus as DocumentStatus)) {
       setStatus(suggestedStatus as DocumentStatus);
@@ -138,7 +143,7 @@ export default function DocumentDetailsScreen() {
         extractedAdditionalFields[field] = value;
       }
     }
-    setAdditionalFields(extractedAdditionalFields);
+    setAdditionalFields((current) => ({ ...extractedAdditionalFields, ...current }));
   }, [pendingAsset]);
 
   const analysisHint = (field: DocumentAnalysisField) =>
@@ -200,12 +205,9 @@ export default function DocumentDetailsScreen() {
     setSaving(true);
     setSaveError('');
     const id = pendingAsset.documentId ?? `document-${Date.now()}`;
-    let persistentUri: string;
+    let persistentAssets: ReturnType<typeof persistDocumentAssets>;
     try {
-      persistentUri =
-        pendingAsset.source === 'scanner' && pendingAsset.pdfUri
-          ? pendingAsset.pdfUri
-          : persistDocumentAsset(pendingAsset, id);
+      persistentAssets = persistDocumentAssets(pendingAsset, id);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : t('details.fileSaveError'));
       setSaving(false);
@@ -227,13 +229,13 @@ export default function DocumentDetailsScreen() {
       status,
       tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean),
       note: note.trim() || undefined,
-      uri: persistentUri,
+       uri: persistentAssets.uri,
       mimeType: pendingAsset.mimeType,
-      pdfUri: pendingAsset.pdfUri,
-      pageUris: pendingAsset.pageUris,
-      originalPageUris: pendingAsset.originalPageUris,
-      cleanPageUris: pendingAsset.cleanPageUris,
-      blackWhitePageUris: pendingAsset.blackWhitePageUris,
+       pdfUri: persistentAssets.pdfUri,
+       pageUris: persistentAssets.pageUris,
+       originalPageUris: persistentAssets.originalPageUris,
+       cleanPageUris: persistentAssets.cleanPageUris,
+       blackWhitePageUris: persistentAssets.blackWhitePageUris,
       selectedVariant: pendingAsset.selectedVariant,
       reconstructionDiagnostics: pendingAsset.reconstructionDiagnostics,
       ocrText: pendingAsset.analysis?.text || undefined,
@@ -285,10 +287,15 @@ export default function DocumentDetailsScreen() {
       createdAt: new Date().toISOString(),
     };
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    savedRef.current = true;
-    addDocument(document);
-    clearPendingAsset();
-    router.replace('/documents');
+    try {
+      await addDocument(document);
+      savedRef.current = true;
+      clearPendingAsset();
+      router.replace('/documents');
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : t('details.fileSaveError'));
+      setSaving(false);
+    }
   };
 
   return (

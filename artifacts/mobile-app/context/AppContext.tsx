@@ -129,6 +129,7 @@ import { chooseLocalBackup, createLocalBackupBundle, parseLocalBackupBundle, rel
 import type { CloudAccount } from '@/utils/backupDomain';
 import { canonicalizeManifest } from '@/utils/backupDomain';
 import { disableUnenforcedSecurity, requireCloudAccountRevalidation } from '@/utils/truthfulness';
+import { validateDocumentAssets, type DocumentAssetState } from '@/utils/documentFiles';
 
 export type DocumentStatus = CoreDocumentStatus;
 export { DOCUMENT_STATUSES };
@@ -211,6 +212,7 @@ export type DocumentRecord = {
   archiveAuditTrail?: ArchiveAuditEntry[];
   duplicateDecision?: import('@/utils/archive').DuplicateDecision;
   archiveReviewStatus?: 'pending' | 'accepted' | 'corrected' | 'unknown' | 'later';
+  assetState?: DocumentAssetState;
 };
 
 export type PendingAsset = {
@@ -283,7 +285,7 @@ type AppContextValue = StoredState & {
   toggleCheckIn: (id: string) => void;
   addJournalEntry: (entry: string) => void;
   removeJournalEntry: (entry: string) => void;
-  addDocument: (document: DocumentRecord) => void;
+  addDocument: (document: DocumentRecord) => Promise<void>;
   updateDocument: (document: DocumentRecord) => void;
   addProfile: (name: string) => void;
   renameProfile: (id: string, name: string) => void;
@@ -292,7 +294,7 @@ type AppContextValue = StoredState & {
   updateTask: (task: DocumentTask) => void;
   updateSettings: (settings: Partial<Settings>) => void;
   hasFeature: (feature: Feature) => boolean;
-  setPendingAsset: (asset: PendingAsset) => void;
+  setPendingAsset: React.Dispatch<React.SetStateAction<PendingAsset | null>>;
   clearPendingAsset: () => void;
   cases: CaseRecord[]; relationships: DocumentRelationship[]; notifications: NotificationRecord[]; activities: ActivityRecord[];
   exportPackages: ExportPackage[]; security: SecuritySettings; onboarding: OnboardingState; family: FamilyWorkspace; business: BusinessWorkspace;
@@ -484,7 +486,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let mounted = true;
     AsyncStorage.getItem(STORAGE_KEY)
-      .then((stored) => {
+       .then(async (stored) => {
         if (!mounted || !stored) return;
          const parsed = JSON.parse(stored) as Partial<StoredState & { profiles: UserProfile[]; tasks: DocumentTask[]; settings: Settings }>;
         setCheckIns(parsed.checkIns ?? {});
@@ -513,14 +515,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                     },
                   })
                 : undefined;
-            const intelligence = currentIntelligence
+             const intelligence = currentIntelligence
               ? applyReviewDecisions(currentIntelligence, d.intelligenceReviewDecisions ?? {})
               : undefined;
-             return migrateArchiveDocument({ ...migrated, intelligence, fingerprint: d.fingerprint ?? documentFingerprint(migrated) });
-          });
-         setDocuments(loadedDocuments);
+              return migrateArchiveDocument({ ...migrated, intelligence, fingerprint: d.fingerprint ?? documentFingerprint(migrated), assetState: 'not_present' as DocumentAssetState });
+           });
+          const validatedDocuments = await Promise.all(loadedDocuments.map(async (document) => ({
+            ...document,
+            assetState: await validateDocumentAssets(document),
+          })));
+          setDocuments(validatedDocuments);
          const migratedActionEngine = migrateActionEngineState(parsed.actionEngine);
-         setActions(mergeDerivedActions(migratedActionEngine.actions, loadedDocuments));
+          setActions(mergeDerivedActions(migratedActionEngine.actions, validatedDocuments));
          setReminders(migratedActionEngine.reminders);
          setFollowUps(migratedActionEngine.followUps);
          setReplyDrafts(migratedActionEngine.replyDrafts);
@@ -611,12 +617,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
    const addActivity = useCallback((type: ActivityRecord['type'], message: string) => setDomain((current) => ({ ...current, activities: [{ id: `activity-${Date.now()}`, type, message, createdAt: new Date().toISOString() }, ...current.activities] })), []);
-    const addDocument = useCallback((document: DocumentRecord) => {
+    const addDocument = useCallback(async (document: DocumentRecord) => {
       const stored = migrateArchiveDocument({ ...document, lifecycle: 'aktiv' as const, fingerprint: document.fingerprint ?? documentFingerprint(document), profileIds: migrateProfileIds(document.profileIds, document.person, profiles) });
-     setDocuments((current) => [stored, ...current]);
-      setActions((current) => dedupeActions([...deriveActionsFromDocument(stored as ActionEngineDocument), ...current]));
-     setDomain((current) => ({ ...current, activities: [{ id: `activity-${Date.now()}`, type: 'dokument', message: `Dokument hinzugefügt: ${document.title}`, createdAt: new Date().toISOString() }, ...current.activities] }));
-  }, [profiles]);
+      const nextDocuments = [stored, ...documents.filter((item) => item.id !== stored.id)];
+      const nextActions = dedupeActions([...deriveActionsFromDocument(stored as ActionEngineDocument), ...actions]);
+      const activity = { id: `activity-${Date.now()}`, type: 'dokument' as const, message: `Dokument hinzugefügt: ${document.title}`, createdAt: new Date().toISOString() };
+      const nextDomain = { ...domain, activities: [activity, ...domain.activities] };
+      const actionEngine: ActionEngineState = { schemaVersion: ACTION_ENGINE_SCHEMA_VERSION, actions: nextActions, reminders, followUps, replyDrafts, calendarCandidates, automationRules };
+      const state: StoredState = { version: CURRENT_VERSION, checkIns, journalEntries, documents: nextDocuments, profiles, tasks, settings, actionEngine, conversations, conversationThreads, explanationStates, assistantContext, assistantMessages, searchHistory, searchIndexVersion: SEARCH_INDEX_VERSION, searchIndexRevision: searchIndexRevision + 1, searchIndexRebuiltAt: new Date().toISOString(), integrations, backup, ...nextDomain };
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      setDocuments(nextDocuments);
+      setActions(nextActions);
+      setSearchIndexRevision(state.searchIndexRevision);
+      setSearchIndexRebuiltAt(state.searchIndexRebuiltAt);
+      setDomain(nextDomain);
+   }, [profiles, documents, actions, domain, reminders, followUps, replyDrafts, calendarCandidates, automationRules, checkIns, journalEntries, tasks, settings, conversations, conversationThreads, explanationStates, assistantContext, assistantMessages, searchHistory, searchIndexRevision, integrations, backup]);
     const updateDocument = useCallback((document: DocumentRecord) => {
        const updated = migrateArchiveDocument({ ...document, fingerprint: documentFingerprint(document), profileIds: migrateProfileIds(document.profileIds, document.person, profiles) });
       setDocuments((current) => current.some((item) => item.id === document.id)

@@ -26,6 +26,9 @@
       "node": "20.19.4",
       "corepack": true,
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_ORIGIN": "https://a78903e1-164d-4a85-9040-edddc26a6ef8-00-cyek21ki2mil.archer.replit.dev"
+      },
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=arm64-v8a",

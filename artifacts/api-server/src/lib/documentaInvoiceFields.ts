@@ -1,6 +1,6 @@
 import type { ParsedField } from "./documentaFields";
 
-const ESSENTIALS = new Set(["sender", "recipient", "invoiceNumber", "customerNumber", "documentDate", "dueDate", "amount", "netAmount", "vatAmount", "paymentTerms"]);
+const ESSENTIALS = new Set(["sender", "recipient", "person", "invoiceNumber", "customerNumber", "referenceNumber", "documentDate", "dueDate", "amount", "netAmount", "vatAmount", "paymentTerms", "iban", "bic"]);
 
 function field(name: string, source: string, start: number, end: number): ParsedField | undefined {
   const value = source.slice(start, end);
@@ -30,9 +30,18 @@ export function extractInvoiceEssentials(source: string): ParsedField[] {
   add("netAmount", /(?:net(?:to)?|subtotal|zwischenbetrag)\s*[:#]?\s*(\d{1,3}(?:[ .]\d{3})*(?:[,.]\d{2})\s?(?:EUR|USD|HUF|Ft|€))/i);
   add("vatAmount", /(?:vat|mwst|ust|umsatzsteuer|áfa)\s*(?:\(?\d{1,2}\s?%\)?)?\s*[:#]?\s*(\d{1,3}(?:[ .]\d{3})*(?:[,.]\d{2})\s?(?:EUR|USD|HUF|Ft|€))/i);
   add("paymentTerms", /(?:payment\s+terms|zahlungsziel|zahlungsbedingungen|payment\s+condition)\s*[:#]?\s*([^\r\n\f]{2,160})/i);
+  add("referenceNumber", /(?:zahlungsreferenz|verwendungszweck|referenz|reference)\s*[:#]?\s*([^\r\n\f]{2,160})/i);
+  add("iban", /\bIBAN\s*[:#]?\s*([A-Z]{2}\s*\d{2}(?:\s*[A-Z0-9]){11,30}?)(?=\s*(?:BIC|SWIFT|$|\r?\n))/im);
+  add("bic", /\b(?:BIC|SWIFT)(?:\/BIC)?\s*[:#]?\s*([A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b/i);
   // Parties require explicit labels and use the following non-empty line.
   add("sender", /(?:sender|from|absender|rechnungssteller)\s*[:#]?\s*\r?\n?\s*([^\r\n\f]{2,160})/i);
   add("recipient", /(?:recipient|bill\s+to|empfänger|rechnung\s+an)\s*[:#]?\s*\r?\n?\s*([^\r\n\f]{2,160})/i);
+  if (!result.some((item) => item.name === "sender")) {
+    add("sender", /^([^\r\n\f]{2,120}\b(?:GmbH(?:\s*&\s*Co\.?\s*KG)?|UG|AG|KG|OHG|e\.?\s*K\.?|e\.?\s*V\.?))\s*$/im);
+  }
+  if (!result.some((item) => item.name === "person")) {
+    add("person", /(?:empfänger|rechnung\s+an|kunde|kundin)\s*[:#]?\s*\r?\n?\s*([A-ZÄÖÜ][\p{L}.'-]+(?:\s+[A-ZÄÖÜ][\p{L}.'-]+){1,3})/iu);
+  }
   return result;
 }
 
